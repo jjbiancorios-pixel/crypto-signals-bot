@@ -166,15 +166,45 @@ def analizar_par(par: str) -> dict | None:
     rango_bajo  = round(precio - 2 * atr, 4)
     rango_alto  = round(precio + 2 * atr, 4)
 
+    # Apalancamiento óptimo según volatilidad
+    if atr_pct >= 1.0:
+        apalancamiento = 3
+        apal_razon = "Volatilidad alta → apalancamiento conservador"
+    elif atr_pct >= 0.5:
+        apalancamiento = 5
+        apal_razon = "Volatilidad media → apalancamiento moderado"
+    else:
+        apalancamiento = 10
+        apal_razon = "Volatilidad baja → apalancamiento alto seguro"
+
+    # Tiempo estimado para 1% de profit
+    # Basado en cuántas veces el precio recorre el ATR por hora
+    # En 100 velas de 15min = 25 horas de datos
+    oscilaciones_por_hora = (atr_pct * 4) / 100  # veces que se mueve el ATR por hora
+    profit_por_hora = oscilaciones_por_hora * (atr_pct / 2) * apalancamiento
+    if profit_por_hora > 0:
+        horas_estimadas = 1 / profit_por_hora
+        if horas_estimadas < 1:
+            tiempo_estimado = f"{int(horas_estimadas * 60)} minutos"
+        elif horas_estimadas < 24:
+            tiempo_estimado = f"{horas_estimadas:.1f} horas"
+        else:
+            tiempo_estimado = f"{horas_estimadas/24:.1f} días"
+    else:
+        tiempo_estimado = "Indeterminado"
+
     return {
-        "par":        par,
-        "precio":     precio,
-        "score":      score,
-        "direccion":  direccion,
-        "rango_bajo": rango_bajo,
-        "rango_alto": rango_alto,
-        "razones":    razones,
-        "atr_pct":    atr_pct,
+        "par":            par,
+        "precio":         precio,
+        "score":          score,
+        "direccion":      direccion,
+        "rango_bajo":     rango_bajo,
+        "rango_alto":     rango_alto,
+        "razones":        razones,
+        "atr_pct":        atr_pct,
+        "apalancamiento": apalancamiento,
+        "apal_razon":     apal_razon,
+        "tiempo_estimado": tiempo_estimado,
     }
 
 
@@ -216,13 +246,15 @@ def generar_alertas():
             f"⚙️ <b>Configuración Grid sugerida:</b>\n"
             f"   Precio bajo:  {r['rango_bajo']} USDT\n"
             f"   Precio alto:  {r['rango_alto']} USDT\n"
-            f"   Apalancamiento: 10x\n"
+            f"   Apalancamiento: <b>{r['apalancamiento']}x</b>\n"
+            f"   ({r['apal_razon']})\n"
             f"   Take profit grilla: 1%\n"
+            f"⏱ Tiempo estimado al 1%: <b>{r['tiempo_estimado']}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📋 <b>Señales detectadas:</b>\n"
             + "\n".join(f"   {s}" for s in r["razones"]) +
             f"\n━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Activá margen dinámico en Pionex\n"
+            f"💡 Sin margen dinámico → usá apalancamiento sugerido\n"
             f"🕐 {ahora}"
         )
         enviar_telegram(msg)
