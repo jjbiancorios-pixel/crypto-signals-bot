@@ -43,7 +43,7 @@ def enviar_telegram(msg: str):
 
 # ── Datos ──────────────────────────────────────────────────
 def get_velas(par: str, tf: str, n: int = 100) -> pd.DataFrame | None:
-    url = f"https://api.binance.com/api/v3/klines?symbol={par}&interval={tf}&limit={n}"
+    url = f"https://data-api.binance.vision/api/v3/klines?symbol={par}&interval={tf}&limit={n}"
     try:
         r = requests.get(url, timeout=10)
         data = r.json()
@@ -61,7 +61,7 @@ def get_velas(par: str, tf: str, n: int = 100) -> pd.DataFrame | None:
 
 def get_precio(par: str) -> float | None:
     try:
-        r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={par}", timeout=5)
+        r = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={par}", timeout=5)
         return float(r.json()["price"])
     except:
         return None
