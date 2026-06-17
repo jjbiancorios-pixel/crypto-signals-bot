@@ -75,37 +75,96 @@ def enviar_telegram(msg: str):
         print(f"Telegram error: {e}")
 
 
-# ── Datos Bybit ────────────────────────────────────────────
+# ── Datos: cascada Bybit → OKX → Binance Vision ────────────
 BYBIT_TF = {"15m":"15","1h":"60","4h":"240","1d":"D"}
+OKX_TF   = {"15m":"15m","1h":"1H","4h":"4H","1d":"1Dutc"}
+OKX_PAR  = lambda p: p.replace("1000SHIB","SHIB").replace("1000PEPE","PEPE").replace("1000BONK","BONK").replace("USDT","-USDT")
+BINANCE_TF = {"15m":"15m","1h":"1h","4h":"4h","1d":"1d"}
 
-def get_velas(par: str, tf: str, n: int = 100) -> pd.DataFrame | None:
+def _velas_bybit(par, tf, n):
     intervalo = BYBIT_TF.get(tf, "15")
     url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={par}&interval={intervalo}&limit={n}"
-    try:
-        r = requests.get(url, timeout=10)
-        data = r.json()
-        if data.get("retCode") != 0:
-            return None
-        rows = data["result"]["list"]
-        if not rows or len(rows) < 20:
-            return None
-        df = pd.DataFrame(rows, columns=["ts","open","high","low","close","vol","turnover"])
-        for c in ["open","high","low","close","vol"]:
-            df[c] = df[c].astype(float)
-        return df.iloc[::-1].reset_index(drop=True)
-    except:
-        return None
+    r = requests.get(url, timeout=8)
+    data = r.json()
+    if data.get("retCode") != 0:
+        raise ValueError("bybit fail")
+    rows = data["result"]["list"]
+    if not rows or len(rows) < 20:
+        raise ValueError("bybit empty")
+    df = pd.DataFrame(rows, columns=["ts","open","high","low","close","vol","turnover"])
+    for c in ["open","high","low","close","vol"]:
+        df[c] = df[c].astype(float)
+    return df.iloc[::-1].reset_index(drop=True)
+
+def _velas_okx(par, tf, n):
+    intervalo = OKX_TF.get(tf, "15m")
+    inst = OKX_PAR(par)
+    url = f"https://www.okx.com/api/v5/market/candles?instId={inst}&bar={intervalo}&limit={n}"
+    r = requests.get(url, timeout=8)
+    data = r.json()
+    rows = data.get("data", [])
+    if not rows or len(rows) < 20:
+        raise ValueError("okx empty")
+    df = pd.DataFrame(rows, columns=["ts","open","high","low","close","vol","volCcy","volCcyQuote","confirm"])
+    for c in ["open","high","low","close","vol"]:
+        df[c] = df[c].astype(float)
+    return df.iloc[::-1].reset_index(drop=True)
+
+def _velas_binance(par, tf, n):
+    intervalo = BINANCE_TF.get(tf, "15m")
+    url = f"https://data-api.binance.vision/api/v3/klines?symbol={par}&interval={intervalo}&limit={n}"
+    r = requests.get(url, timeout=8)
+    data = r.json()
+    if not isinstance(data, list) or len(data) < 20:
+        raise ValueError("binance empty")
+    df = pd.DataFrame(data, columns=[
+        "ts","open","high","low","close","vol","ct","qav","trades","tbbav","tbqav","ignore"])
+    for c in ["open","high","low","close","vol"]:
+        df[c] = df[c].astype(float)
+    return df
+
+def get_velas(par: str, tf: str, n: int = 100) -> pd.DataFrame | None:
+    for fuente in (_velas_bybit, _velas_okx, _velas_binance):
+        try:
+            df = fuente(par, tf, n)
+            if df is not None and len(df) >= 20:
+                return df
+        except Exception:
+            continue
+    return None
+
+def _precio_bybit(par):
+    url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={par}"
+    r = requests.get(url, timeout=6)
+    data = r.json()
+    if data.get("retCode") != 0:
+        raise ValueError("bybit fail")
+    return float(data["result"]["list"][0]["lastPrice"])
+
+def _precio_okx(par):
+    inst = OKX_PAR(par)
+    url = f"https://www.okx.com/api/v5/market/ticker?instId={inst}"
+    r = requests.get(url, timeout=6)
+    data = r.json()
+    rows = data.get("data", [])
+    if not rows:
+        raise ValueError("okx empty")
+    return float(rows[0]["last"])
+
+def _precio_binance(par):
+    url = f"https://data-api.binance.vision/api/v3/ticker/price?symbol={par}"
+    r = requests.get(url, timeout=6)
+    return float(r.json()["price"])
 
 def get_precio(par: str) -> float | None:
-    url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={par}"
-    try:
-        r = requests.get(url, timeout=5)
-        data = r.json()
-        if data.get("retCode") != 0:
-            return None
-        return float(data["result"]["list"][0]["lastPrice"])
-    except:
-        return None
+    for fuente in (_precio_bybit, _precio_okx, _precio_binance):
+        try:
+            p = fuente(par)
+            if p and p > 0:
+                return p
+        except Exception:
+            continue
+    return None
 
 
 # ── Indicadores ────────────────────────────────────────────
@@ -277,10 +336,12 @@ def calcular_grid(precio: float, atr_pct: float, score: int) -> dict:
     liq_corto = round(precio * (1 + 1/apal), 6)
     dist_liq  = round((rango_bajo - liq_largo) / precio * 100, 2)
 
-    # Tiempo estimado: necesitamos 5 cruces × pct_grilla = 1%
+    # Tiempo estimado: calibrado con resultado real (INJ tardó ~4h con cálculo optimista)
+    # Aplicamos factor de corrección 1.8x para reflejar la realidad del mercado
     cruces_hora  = (atr_pct * 4) / pct_grilla if pct_grilla > 0 else 0.1
     cruces_para_1pct = max(1, int(1.0 / (pct_grilla * apal / 100) / 100))
-    horas_1pct   = cruces_para_1pct / cruces_hora if cruces_hora > 0 else 99
+    horas_1pct_teorico = cruces_para_1pct / cruces_hora if cruces_hora > 0 else 99
+    horas_1pct   = horas_1pct_teorico * 1.8  # factor de corrección por calibración real
 
     if horas_1pct < 1:   t1 = f"{int(horas_1pct*60)} min"
     elif horas_1pct < 8: t1 = f"{horas_1pct:.1f} hs"
@@ -685,21 +746,27 @@ def resumen_matutino():
 
 # ── Main ───────────────────────────────────────────────────
 def main():
-    print(f"🤖 Bot v7 iniciado — {len(PARES)} pares")
+    print(f"🤖 Bot v8 iniciado — {len(PARES)} pares")
     enviar_telegram(
-        f"🤖 <b>JJ Cripto Bot v7 iniciado</b>\n"
-        f"📊 {len(PARES)} pares | Bybit API\n"
-        f"🕐 Horario ARG (UTC-3) | 7:00 a 24:00\n"
-        f"⏰ Análisis a los :03 y :33 de cada hora\n"
+        f"🤖 <b>JJ Cripto Bot v8 iniciado</b>\n"
+        f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
+        f"🕐 Horario ARG (UTC-3) corregido | 7:00 a 24:00\n"
+        f"⏰ Análisis a los :03 y :33 de cada hora (hora ARG real)\n"
         f"🎯 Objetivo diario: {OBJETIVO_DIARIO}% | Solo LARGO y CORTO\n"
-        f"✅ Preset Pionex + grillas densas + alerta de cierre"
+        f"✅ Tiempo estimado calibrado con datos reales"
     )
 
-    for h in range(7, 24):
-        schedule.every().day.at(f"{h:02d}:03").do(generar_alertas)
-        schedule.every().day.at(f"{h:02d}:33").do(generar_alertas)
+    # schedule.every().day.at() usa la hora del SISTEMA (UTC en Railway).
+    # Hora ARG = UTC - 3, entonces para que algo corra a las H:MM hora ARG,
+    # hay que programarlo a las (H+3):MM en UTC.
+    for h_arg in range(7, 24):
+        h_utc = (h_arg + 3) % 24
+        schedule.every().day.at(f"{h_utc:02d}:03").do(generar_alertas)
+        schedule.every().day.at(f"{h_utc:02d}:33").do(generar_alertas)
 
-    schedule.every().day.at(HORA_RESUMEN).do(resumen_matutino)
+    # Resumen a las 09:03 ARG = 12:03 UTC
+    h_resumen_utc = (9 + 3) % 24
+    schedule.every().day.at(f"{h_resumen_utc:02d}:03").do(resumen_matutino)
 
     if en_horario_operativo():
         generar_alertas()
