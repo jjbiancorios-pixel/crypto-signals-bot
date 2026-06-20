@@ -5,6 +5,8 @@ import time
 import schedule
 from datetime import datetime, timezone, timedelta
 import os
+import db
+import telegram_cmds
 
 # ── Configuración ──────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8761617567:AAGbH0Vgb-13kVZppZ-fwZHT6QngI8ZkYOo")
@@ -40,10 +42,10 @@ OBJETIVO_DIARIO = 3
 # Umbral de movimiento de BTC para señal de caída brusca (cortos)
 BTC_CAIDA_BRUSCA_PCT = -2.0  # BTC cayó más de 2% en 1h
 
-alertas_enviadas     = {}
-resumen_enviado       = {}
-señales_del_dia       = {}
-operaciones_abiertas  = {}
+alertas_enviadas     = {}   # se mantiene como caché en RAM; persistencia real en db.alertas_enviadas
+resumen_enviado       = {}  # idem — chequeo real contra db.resumen_ya_enviado
+señales_del_dia       = {}  # ya no se usa para cálculos; queda por compatibilidad de imports
+operaciones_abiertas  = {}  # idem
 
 
 # ── Utilidades ─────────────────────────────────────────────
@@ -408,45 +410,43 @@ def analizar_par(par, btc, forzar_corto=False):
             "atr_pct":atr_pct,**grid}
 
 
-# ── Contador diario ────────────────────────────────────────
+# ── Contador diario (persistente en SQLite) ─────────────────
 def registrar_señal(par, ganancia):
-    hoy=hoy_arg()
-    if hoy not in señales_del_dia: señales_del_dia[hoy]=[]
-    señales_del_dia[hoy].append({"par":par,"ganancia":ganancia})
+    db.registrar_ganancia_dia(par, ganancia)
 
 def obj_diario():
-    señales=señales_del_dia.get(hoy_arg(),[])
-    total=sum(s["ganancia"] for s in señales)
-    return {"n":len(señales),"total":round(total,2),"ok":total>=OBJETIVO_DIARIO,
-            "faltan":round(max(0,OBJETIVO_DIARIO-total),2)}
+    return db.obj_diario_db(OBJETIVO_DIARIO)
 
 
-# ── Alertas de cierre ──────────────────────────────────────
+
+# ── Alertas de cierre (RECORDATORIO, no confirmación real de TP) ──
 def programar_cierre(par, dir, precio, horas, ganancia, tp):
     clave=f"{par}_{hoy_arg()}_{hora_arg()}"
-    operaciones_abiertas[clave]={
-        "par":par,"dir":dir,"entrada":precio,"horas":horas,
-        "ganancia":ganancia,"tp":tp,"apertura":hora_arg(),
-        "cierre_est":(datetime.now(TZ_ARG)+timedelta(hours=horas)).strftime("%H:%M"),
-    }
+    db.guardar_operacion_abierta(
+        clave, par, dir, precio, horas, ganancia, tp,
+        hora_arg(), (datetime.now(TZ_ARG)+timedelta(hours=horas)).strftime("%H:%M"),
+    )
 
 def verificar_cierres():
     try:
         ahora=datetime.now(TZ_ARG)
-        for k,op in list(operaciones_abiertas.items()):
+        for op in db.operaciones_abiertas_pendientes():
             hc=datetime.strptime(op["cierre_est"],"%H:%M").replace(
                 year=ahora.year,month=ahora.month,day=ahora.day,tzinfo=TZ_ARG)
             if ahora>=hc:
                 enviar_telegram(
-                    f"⏰ <b>REVISAR OPERACIÓN — {hora_arg()} hs</b>\n"
-                    f"📌 {op['par']} | {op['dir']}\n"
-                    f"💰 Entrada: {op['entrada']} | TP: {op['tp']}%\n"
+                    f"⏰ <b>RECORDATORIO — {hora_arg()} hs</b>\n"
+                    f"📌 {op['par']} | {op['direccion']}\n"
+                    f"💰 Entrada: {op['entrada']} | TP estimado: {op['tp']}%\n"
                     f"⏱ Abierta desde: {op['apertura']} hs\n"
-                    f"✅ Revisá si alcanzaste el TP y cerrá el bot"
+                    f"⚠️ Este es un recordatorio basado en tiempo estimado, NO una confirmación de que tocaste el TP.\n"
+                    f"✅ Revisá el precio real en Pionex y decidí si cerrar.\n"
+                    f"📝 Cuando cierres, usá /cerrar {op['par'].replace('USDT','')} +X.X (o -X.X)"
                 )
-                del operaciones_abiertas[k]
+                db.borrar_operacion_abierta(op["clave"])
     except Exception as e:
         print(f"Error cierres: {e}")
+
 
 
 # ── Generar alertas ────────────────────────────────────────
@@ -506,8 +506,8 @@ def generar_alertas(forzar_corto=False):
         enviadas=0
         for r in resultados[:MAX_ALERTAS]:
             clave=f"{r['par']}_{datetime.now(TZ_ARG).strftime('%Y%m%d_%H')}"
-            if clave in alertas_enviadas: continue
-            alertas_enviadas[clave]=True
+            if db.alerta_existe(clave): continue
+            db.marcar_alerta_enviada(clave)
 
             # Margen de entrada
             if r["direccion"]=="📈 LARGO":
@@ -525,12 +525,14 @@ def generar_alertas(forzar_corto=False):
             nuevo_total=round(obj["total"]+r["ganancia_8h"],2)
             prog_txt=f"📅 Hoy: {obj['total']}% acum. → con esta: ~{nuevo_total}% {'✅' if nuevo_total>=OBJETIVO_DIARIO else f'| Faltan: {round(OBJETIVO_DIARIO-nuevo_total,2)}%'}"
 
+            par_corto=r["par"].replace("USDT","")
+
             # Mensaje simplificado arriba + técnico abajo
             msg=(
                 f"🚨 <b>━━ SEÑAL GRID — PROB. ALTA ━━</b>\n\n"
                 f"📌 <b>{r['par']}</b>  {r['direccion']}  ⚡<b>{r['apal']}x</b>\n"
                 f"🎰 Probabilidad: <b>{r['prob']}</b>  |  Score: {r['score']}/16\n"
-                f"⏱ Tiempo est. al 1%: <b>{r['tiempo_1pct']}</b>\n\n"
+                f"⏱ Tiempo est. al 1%: <b>{r['tiempo_1pct']}</b> (estimado, no garantizado)\n\n"
                 f"── <b>ACCIÓN INMEDIATA</b> ──\n"
                 f"Preset Pionex: <b>{r['preset']}</b>\n"
                 f"{obj_txt}\n"
@@ -547,10 +549,12 @@ def generar_alertas(forzar_corto=False):
                 f"BTC: {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f}) | {btc['estado']}\n\n"
                 f"── <b>ANÁLISIS TÉCNICO</b> ──\n"
                 +"\n".join(f"  {s}" for s in r["razones"][:8])+
-                f"\n\n🕐 {ahora} hs (ARG)"
+                f"\n\n📝 Si abrís en Pionex: /registrar {par_corto} APAL RANGO_BAJO RANGO_ALTO GRILLAS\n"
+                f"🕐 {ahora} hs (ARG)"
             )
             enviar_telegram(msg)
             registrar_señal(r["par"],r["ganancia_8h"])
+            db.guardar_senal(r)
             programar_cierre(r["par"],r["direccion"],r["precio"],r["horas_1pct"],r["ganancia_8h"],r["tp_obj"])
             enviadas+=1
             print(f"  ✅ {r['par']} {r['direccion']} score={r['score']}")
@@ -567,9 +571,9 @@ def generar_alertas(forzar_corto=False):
 def resumen_matutino():
     try:
         hoy=hoy_arg()
-        if resumen_enviado.get(hoy): return
-        resumen_enviado[hoy]=True
-        señales_del_dia[hoy]=[]
+        if db.resumen_ya_enviado(hoy): return
+        db.marcar_resumen_enviado(hoy)
+        # No hace falta "resetear" el contador: obj_diario_db() ya filtra por fecha actual.
 
         btc=analizar_btc()
         candidatos=[]
@@ -608,15 +612,17 @@ def resumen_matutino():
 
 # ── Main ───────────────────────────────────────────────────
 def main():
-    print(f"🤖 Bot v10 iniciado — {len(PARES)} pares")
+    db.init_db()
+    print(f"🤖 Bot v11 iniciado — {len(PARES)} pares")
     enviar_telegram(
-        f"🤖 <b>JJ Cripto Bot v10 iniciado</b>\n"
+        f"🤖 <b>JJ Cripto Bot v11 iniciado</b>\n"
         f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
         f"⏰ 7:00-23:00 ARG | :03 y :33 de cada hora\n"
         f"🎯 Solo ALTA prob. | Objetivo {OBJETIVO_DIARIO}% diario (sin límite)\n"
         f"💰 TP exacto + margen de entrada + config con/sin reserva\n"
         f"💥 Alerta especial caída brusca BTC → CORTOS\n"
-        f"🗑️ CYBER y DYDX eliminados (no disponibles en Pionex)"
+        f"🗑️ CYBER y DYDX eliminados (no disponibles en Pionex)\n"
+        f"💾 Persistencia SQLite activada | Comandos: /ayuda"
     )
 
     for h_arg in range(7,23):
@@ -631,7 +637,9 @@ def main():
         generar_alertas()
 
     while True:
-        try: schedule.run_pending()
+        try:
+            schedule.run_pending()
+            telegram_cmds.revisar_updates()
         except Exception as e: print(f"Error loop: {e}")
         time.sleep(30)
 
