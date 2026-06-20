@@ -345,6 +345,26 @@ def analizar_par(par, btc, forzar_corto=False):
     vol_r=float(df15["vol"].iloc[-1])/max(float(df15["vol"].iloc[-21:-1].mean()),0.0001)
     corr=correlacion_propia(df15,btc["mov_pct"])
 
+    # ── PASO 1: determinar dirección CANDIDATA primero ──
+    if forzar_corto:
+        direccion_cand = "CORTO"
+    elif btc["estado"]=="SUBIO_RANGEA":
+        direccion_cand = "LARGO"
+    elif btc["estado"]=="BAJO_RANGEA":
+        direccion_cand = "CORTO"
+    elif corr["diverge_fuerte"] and corr["mov_propio"]>0:
+        direccion_cand = "LARGO"
+    elif corr["diverge_fuerte"] and corr["mov_propio"]<0:
+        direccion_cand = "CORTO"
+    elif rsi15<=42 and mc15["macd"]>mc15["signal"] and btc["fuerza"]>=0:
+        direccion_cand = "LARGO"
+    elif rsi15>=58 and mc15["macd"]<mc15["signal"] and btc["fuerza"]<=0:
+        direccion_cand = "CORTO"
+    else:
+        return None
+
+    es_largo = direccion_cand == "LARGO"
+
     score=0; razones=[]
 
     if atr_pct>=0.8: score+=2; razones.append(f"✅ Volatilidad alta: {atr_pct:.2f}%")
@@ -356,12 +376,27 @@ def analizar_par(par, btc, forzar_corto=False):
     else: razones.append(f"❌ Bollinger comprimido: {bb15['ancho']:.1f}%")
 
     if 0.15<=bb15["pos"]<=0.85: score+=1; razones.append(f"✅ Precio en zona grid")
-    if 30<=rsi15<=70: score+=1; razones.append(f"✅ RSI neutro: {rsi15:.1f}")
-    else: score+=1; razones.append(f"⚡ RSI extremo: {rsi15:.1f}")
+
+    # ── RSI: corregido para confirmar la DIRECCIÓN, no sumar siempre ──
+    if 30<=rsi15<=70:
+        score+=1; razones.append(f"✅ RSI neutro: {rsi15:.1f} (zona oscilación)")
+    elif rsi15<30 and es_largo:
+        score+=2; razones.append(f"✅ RSI sobreventa: {rsi15:.1f} (confirma LARGO)")
+    elif rsi15>70 and not es_largo:
+        score+=2; razones.append(f"✅ RSI sobrecompra: {rsi15:.1f} (confirma CORTO)")
+    elif rsi15>70 and es_largo:
+        razones.append(f"⚠️ RSI sobrecompra: {rsi15:.1f} (CONTRADICE LARGO, riesgo reversión)")
+    elif rsi15<30 and not es_largo:
+        razones.append(f"⚠️ RSI sobreventa: {rsi15:.1f} (CONTRADICE CORTO, riesgo reversión)")
+    else:
+        razones.append(f"⚡ RSI: {rsi15:.1f}")
+
     if 20<=sr15<=80: score+=1; razones.append(f"✅ StochRSI: {sr15:.1f}")
 
-    if mc15["cruce_alc"] or mc15["cruce_baj"]:
-        score+=2; razones.append(f"✅ Cruce MACD {'alcista 🟢' if mc15['cruce_alc'] else 'bajista 🔴'}")
+    if (mc15["cruce_alc"] and es_largo) or (mc15["cruce_baj"] and not es_largo):
+        score+=2; razones.append(f"✅ Cruce MACD {'alcista 🟢' if es_largo else 'bajista 🔴'} (confirma)")
+    elif mc15["cruce_alc"] or mc15["cruce_baj"]:
+        razones.append(f"⚠️ Cruce MACD en contra de la señal")
     elif abs(mc15["hist"])>0: score+=1; razones.append(f"⚡ MACD momentum")
 
     if forzar_corto:
@@ -375,16 +410,21 @@ def analizar_par(par, btc, forzar_corto=False):
     elif corr["diverge_fuerte"]:
         score+=1; razones.append(f"✅ Movimiento propio: {corr['mov_propio']}%")
 
-    if pat in ["MARTILLO_ALC","ENGULFING_ALC","VELA_ALC"] and btc["fuerza"]>=0:
-        score+=2; razones.append(f"✅ Patrón: {pat}")
-    elif pat in ["SHOOTING_BAJ","ENGULFING_BAJ","VELA_BAJ"] and btc["fuerza"]<=0:
-        score+=2; razones.append(f"✅ Patrón: {pat}")
+    patrones_alcistas = ["MARTILLO_ALC","ENGULFING_ALC","VELA_ALC"]
+    patrones_bajistas = ["SHOOTING_BAJ","ENGULFING_BAJ","VELA_BAJ"]
+    if (pat in patrones_alcistas and es_largo) or (pat in patrones_bajistas and not es_largo):
+        score+=2; razones.append(f"✅ Patrón confirma: {pat}")
+    elif pat in patrones_alcistas or pat in patrones_bajistas:
+        razones.append(f"⚠️ Patrón {pat} contradice la señal")
     elif pat=="DOJI": score+=1; razones.append(f"⚡ Doji")
 
     if df1h is not None and len(df1h)>=20:
         e20_1h=calc_ema(df1h["close"],20); r1h=calc_rsi(df1h["close"])
-        if (precio>e20_1h and btc["fuerza"]>=0) or (precio<e20_1h and btc["fuerza"]<=0):
-            score+=1; razones.append(f"✅ 1h confirma RSI:{r1h:.0f}")
+        confirma_1h = (precio>e20_1h and es_largo) or (precio<e20_1h and not es_largo)
+        if confirma_1h:
+            score+=1; razones.append(f"✅ 1h confirma {direccion_cand} (RSI:{r1h:.0f})")
+        else:
+            razones.append(f"⚠️ 1h en contra de {direccion_cand} (RSI:{r1h:.0f})")
 
     if vol_r>=1.2: score+=1; razones.append(f"✅ Volumen: {vol_r:.1f}x")
     elif vol_r>=0.7: score+=1; razones.append(f"⚡ Volumen normal: {vol_r:.1f}x")
@@ -392,15 +432,7 @@ def analizar_par(par, btc, forzar_corto=False):
     if score<MIN_SCORE_ALTA: return None
 
     pct=score/16*100
-
-    if forzar_corto: direccion="📉 CORTO"
-    elif btc["estado"]=="SUBIO_RANGEA": direccion="📈 LARGO"
-    elif btc["estado"]=="BAJO_RANGEA": direccion="📉 CORTO"
-    elif corr["diverge_fuerte"] and corr["mov_propio"]>0: direccion="📈 LARGO"
-    elif corr["diverge_fuerte"] and corr["mov_propio"]<0: direccion="📉 CORTO"
-    elif rsi15<=42 and mc15["macd"]>mc15["signal"] and btc["fuerza"]>=0: direccion="📈 LARGO"
-    elif rsi15>=58 and mc15["macd"]<mc15["signal"] and btc["fuerza"]<=0: direccion="📉 CORTO"
-    else: return None
+    direccion = "📈 LARGO" if es_largo else "📉 CORTO"
 
     grid=calcular_grid(precio,atr_pct,score)
     if not grid["apto"]: return None
@@ -485,6 +517,8 @@ def generar_alertas(forzar_corto=False):
         resultados=[]
         for par in PARES:
             try:
+                if db.par_esta_pausado(par):
+                    continue  # Mejora 3: par excluido temporalmente (manual o por racha negativa)
                 r=analizar_par(par,btc,forzar_corto)
                 if r: resultados.append(r)
             except Exception as e:
@@ -611,18 +645,45 @@ def resumen_matutino():
 
 
 # ── Main ───────────────────────────────────────────────────
+# ── Mejora 2: aviso de operaciones estancadas (independiente) ──
+def avisar_estancadas():
+    """No toca generar_alertas ni analizar_par. Solo lee de la DB
+    y sugiere considerar hedge — la decisión queda en el usuario."""
+    try:
+        estancadas = db.operaciones_estancadas(horas_limite=6.0)
+        if not estancadas:
+            return
+        lineas = [f"⏳ <b>Recordatorio — operaciones estancadas</b>"]
+        for r in estancadas[:5]:
+            lineas.append(
+                f"• {r['par']} {r['direccion']} | {r['horas_abierta']}hs abierta"
+            )
+        lineas.append(
+            "\nUsá /estancadas para el detalle completo.\n"
+            "💡 Si sigue en rango pero en pérdida de tendencia hace mucho, "
+            "considerá una posición CONTRARIA con capital nuevo (opcional, no automático)."
+        )
+        enviar_telegram("\n".join(lineas))
+    except Exception as e:
+        print(f"Error avisar_estancadas: {e}")
+
+
+# ── Main ───────────────────────────────────────────────────
 def main():
     db.init_db()
-    print(f"🤖 Bot v11 iniciado — {len(PARES)} pares")
+    print(f"🤖 Bot v12 iniciado — {len(PARES)} pares")
     enviar_telegram(
-        f"🤖 <b>JJ Cripto Bot v11 iniciado</b>\n"
+        f"🤖 <b>JJ Cripto Bot v12 iniciado</b>\n"
         f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
         f"⏰ 7:00-23:00 ARG | :03 y :33 de cada hora\n"
         f"🎯 Solo ALTA prob. | Objetivo {OBJETIVO_DIARIO}% diario (sin límite)\n"
         f"💰 TP exacto + margen de entrada + config con/sin reserva\n"
         f"💥 Alerta especial caída brusca BTC → CORTOS\n"
         f"🗑️ CYBER y DYDX eliminados (no disponibles en Pionex)\n"
-        f"💾 Persistencia SQLite activada | Comandos: /ayuda"
+        f"💾 Persistencia SQLite | 🔧 Bug RSI corregido (confirma dirección real)\n"
+        f"⏸️ /pausar /reanudar pares | 📅 /objetivo sobre resultado REAL\n"
+        f"⏳ /estancadas + aviso automático cada 6h\n"
+        f"Comandos: /ayuda"
     )
 
     for h_arg in range(7,23):
@@ -632,6 +693,9 @@ def main():
 
     h_res_utc=(9+3)%24
     schedule.every().day.at(f"{h_res_utc:02d}:03").do(resumen_matutino)
+
+    # Mejora 2: chequeo de estancadas cada 6 horas, independiente del resto
+    schedule.every(6).hours.do(avisar_estancadas)
 
     if en_horario_operativo():
         generar_alertas()

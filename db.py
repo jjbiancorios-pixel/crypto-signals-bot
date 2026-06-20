@@ -99,8 +99,132 @@ def init_db():
         )
     """)
 
+    # ── Mejora 3: pares pausados temporalmente ──
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pares_pausados (
+            par TEXT PRIMARY KEY,
+            motivo TEXT,
+            desde TEXT,
+            hasta TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
+
+
+# ── Mejora 1: objetivo diario sobre capital real (sin reserva) ─
+def registrar_ganancia_dia_real(par: str, ganancia_pct_pionex: float):
+    """
+    A diferencia de registrar_ganancia_dia (que usa la estimación del bot),
+    esta usa el % real que el usuario reporta desde Pionex (ya es neto,
+    calculado por Pionex sobre el capital sin reserva).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute(
+        "INSERT INTO señales_del_dia (fecha, par, ganancia) VALUES (?,?,?)",
+        (hoy, par, ganancia_pct_pionex)
+    )
+    conn.commit()
+    conn.close()
+
+
+# ── Mejora 3: pausar/reanudar pares problemáticos ───────────
+def pausar_par(par: str, motivo: str, horas: int = 24):
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    hasta = ahora + timedelta(hours=horas)
+    cur.execute("""
+        INSERT OR REPLACE INTO pares_pausados (par, motivo, desde, hasta)
+        VALUES (?,?,?,?)
+    """, (par, motivo, ahora.isoformat(), hasta.isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def par_esta_pausado(par: str) -> bool:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT hasta FROM pares_pausados WHERE par = ?", (par,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return False
+    try:
+        hasta = datetime.fromisoformat(row["hasta"])
+        if datetime.now(TZ_ARG) >= hasta:
+            despausar_par(par)
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def despausar_par(par: str):
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM pares_pausados WHERE par = ?", (par,))
+    conn.commit()
+    conn.close()
+
+
+def pares_pausados_activos() -> list:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM pares_pausados")
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    activos = []
+    for r in rows:
+        if par_esta_pausado(r["par"]):
+            activos.append(r)
+    return activos
+
+
+def ultimos_resultados_par(par: str, n: int = 2) -> list:
+    """Últimos N resultados cerrados de un par, para detectar racha negativa."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT resultado_pct FROM senales
+        WHERE par = ? AND cerrado = 1 AND resultado_pct IS NOT NULL
+        ORDER BY id DESC LIMIT ?
+    """, (par, n))
+    rows = [r["resultado_pct"] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+# ── Mejora 2: operación estancada → candidata a hedge ───────
+def operaciones_estancadas(horas_limite: float = 6.0) -> list:
+    """
+    Señales abiertas (cerrado=0) hace más de horas_limite,
+    con datos de Pionex registrados (para saber dirección y precio real).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM senales
+        WHERE cerrado = 0 AND registrado_pionex = 1
+    """)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+
+    ahora = datetime.now(TZ_ARG)
+    estancadas = []
+    for r in rows:
+        try:
+            apertura = datetime.strptime(f"{r['fecha']} {r['hora_alerta']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
+            horas_abierta = (ahora - apertura).total_seconds() / 3600
+            if horas_abierta >= horas_limite:
+                r["horas_abierta"] = round(horas_abierta, 1)
+                estancadas.append(r)
+        except Exception:
+            continue
+    return estancadas
 
 
 # ── Señales (histórico completo) ────────────────────────────
