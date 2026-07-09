@@ -99,7 +99,6 @@ def init_db():
         )
     """)
 
-    # ── Mejora 3: pares pausados temporalmente ──
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pares_pausados (
             par TEXT PRIMARY KEY,
@@ -111,120 +110,6 @@ def init_db():
 
     conn.commit()
     conn.close()
-
-
-# ── Mejora 1: objetivo diario sobre capital real (sin reserva) ─
-def registrar_ganancia_dia_real(par: str, ganancia_pct_pionex: float):
-    """
-    A diferencia de registrar_ganancia_dia (que usa la estimación del bot),
-    esta usa el % real que el usuario reporta desde Pionex (ya es neto,
-    calculado por Pionex sobre el capital sin reserva).
-    """
-    conn = _conn()
-    cur = conn.cursor()
-    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
-    cur.execute(
-        "INSERT INTO señales_del_dia (fecha, par, ganancia) VALUES (?,?,?)",
-        (hoy, par, ganancia_pct_pionex)
-    )
-    conn.commit()
-    conn.close()
-
-
-# ── Mejora 3: pausar/reanudar pares problemáticos ───────────
-def pausar_par(par: str, motivo: str, horas: int = 24):
-    conn = _conn()
-    cur = conn.cursor()
-    ahora = datetime.now(TZ_ARG)
-    hasta = ahora + timedelta(hours=horas)
-    cur.execute("""
-        INSERT OR REPLACE INTO pares_pausados (par, motivo, desde, hasta)
-        VALUES (?,?,?,?)
-    """, (par, motivo, ahora.isoformat(), hasta.isoformat()))
-    conn.commit()
-    conn.close()
-
-
-def par_esta_pausado(par: str) -> bool:
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("SELECT hasta FROM pares_pausados WHERE par = ?", (par,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return False
-    try:
-        hasta = datetime.fromisoformat(row["hasta"])
-        if datetime.now(TZ_ARG) >= hasta:
-            despausar_par(par)
-            return False
-        return True
-    except Exception:
-        return False
-
-
-def despausar_par(par: str):
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM pares_pausados WHERE par = ?", (par,))
-    conn.commit()
-    conn.close()
-
-
-def pares_pausados_activos() -> list:
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM pares_pausados")
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    activos = []
-    for r in rows:
-        if par_esta_pausado(r["par"]):
-            activos.append(r)
-    return activos
-
-
-def ultimos_resultados_par(par: str, n: int = 2) -> list:
-    """Últimos N resultados cerrados de un par, para detectar racha negativa."""
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT resultado_pct FROM senales
-        WHERE par = ? AND cerrado = 1 AND resultado_pct IS NOT NULL
-        ORDER BY id DESC LIMIT ?
-    """, (par, n))
-    rows = [r["resultado_pct"] for r in cur.fetchall()]
-    conn.close()
-    return rows
-
-
-# ── Mejora 2: operación estancada → candidata a hedge ───────
-def operaciones_estancadas(horas_limite: float = 6.0) -> list:
-    """
-    Señales abiertas (cerrado=0) hace más de horas_limite,
-    con datos de Pionex registrados (para saber dirección y precio real).
-    """
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT * FROM senales
-        WHERE cerrado = 0 AND registrado_pionex = 1
-    """)
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-
-    ahora = datetime.now(TZ_ARG)
-    estancadas = []
-    for r in rows:
-        try:
-            apertura = datetime.strptime(f"{r['fecha']} {r['hora_alerta']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
-            horas_abierta = (ahora - apertura).total_seconds() / 3600
-            if horas_abierta >= horas_limite:
-                r["horas_abierta"] = round(horas_abierta, 1)
-                estancadas.append(r)
-        except Exception:
-            continue
-    return estancadas
 
 
 # ── Señales (histórico completo) ────────────────────────────
@@ -411,6 +296,213 @@ def borrar_operacion_abierta(clave: str):
     cur.execute("DELETE FROM operaciones_abiertas WHERE clave = ?", (clave,))
     conn.commit()
     conn.close()
+
+
+# ── Resúmenes de rendimiento (diario/semanal/mensual) ───────
+def _calcular_resumen(rows: list) -> dict:
+    """Calcula métricas comunes dado una lista de filas de senales."""
+    if not rows:
+        return {"n": 0, "n_pos": 0, "n_neg": 0, "n_abiertas": 0,
+                "gan_total": 0, "gan_prom": 0, "win_rate": 0,
+                "gan_total_sin": 0, "gan_prom_sin": 0, "win_rate_sin": 0}
+
+    cerradas = [r for r in rows if r["cerrado"] == 1 and r["resultado_pct"] is not None]
+    abiertas = [r for r in rows if r["cerrado"] == 0]
+    positivas = [r for r in cerradas if r["resultado_pct"] > 0]
+    negativas = [r for r in cerradas if r["resultado_pct"] <= 0]
+
+    # Con estancadas (todas las cerradas)
+    gan_total = sum(r["resultado_pct"] for r in cerradas)
+    gan_prom = gan_total / len(cerradas) if cerradas else 0
+    win_rate = len(positivas) / len(cerradas) * 100 if cerradas else 0
+
+    # Sin estancadas (solo las que cerraron en <= 12 horas, el umbral confirmado)
+    rapidas = [r for r in cerradas if r["tiempo_real_min"] is not None and r["tiempo_real_min"] <= 720]
+    gan_total_sin = sum(r["resultado_pct"] for r in rapidas)
+    gan_prom_sin = gan_total_sin / len(rapidas) if rapidas else 0
+    win_rate_sin = sum(1 for r in rapidas if r["resultado_pct"] > 0) / len(rapidas) * 100 if rapidas else 0
+
+    return {
+        "n": len(cerradas),
+        "n_pos": len(positivas),
+        "n_neg": len(negativas),
+        "n_abiertas": len(abiertas),
+        "n_rapidas": len(rapidas),
+        "gan_total": round(gan_total, 2),
+        "gan_prom": round(gan_prom, 2),
+        "win_rate": round(win_rate, 1),
+        "gan_total_sin": round(gan_total_sin, 2),
+        "gan_prom_sin": round(gan_prom_sin, 2),
+        "win_rate_sin": round(win_rate_sin, 1),
+        "mejor": round(max((r["resultado_pct"] for r in cerradas), default=0), 2),
+        "peor": round(min((r["resultado_pct"] for r in cerradas), default=0), 2),
+    }
+
+
+def resumen_diario(fecha: str = None) -> dict:
+    """Resumen de operaciones de un día. Si no se pasa fecha, usa hoy ARG."""
+    conn = _conn()
+    cur = conn.cursor()
+    if fecha is None:
+        fecha = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute("SELECT * FROM senales WHERE fecha = ?", (fecha,))
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    resultado = _calcular_resumen(rows)
+    resultado["fecha"] = fecha
+    return resultado
+
+
+def resumen_semanal() -> dict:
+    """Resumen de los últimos 7 días."""
+    conn = _conn()
+    cur = conn.cursor()
+    desde = (datetime.now(TZ_ARG) - timedelta(days=7)).strftime("%Y%m%d")
+    cur.execute("SELECT * FROM senales WHERE fecha >= ?", (desde,))
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    resultado = _calcular_resumen(rows)
+    resultado["periodo"] = f"{desde} → hoy"
+    return resultado
+
+
+def resumen_mensual() -> dict:
+    """Resumen de los últimos 30 días."""
+    conn = _conn()
+    cur = conn.cursor()
+    desde = (datetime.now(TZ_ARG) - timedelta(days=30)).strftime("%Y%m%d")
+    cur.execute("SELECT * FROM senales WHERE fecha >= ?", (desde,))
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    resultado = _calcular_resumen(rows)
+    resultado["periodo"] = f"{desde} → hoy"
+    return resultado
+
+
+def resumen_por_dia_detalle() -> list:
+    """Retorna una fila por cada día con datos, útil para ver tendencia."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT fecha,
+               COUNT(*) as total,
+               SUM(CASE WHEN cerrado=1 AND resultado_pct > 0 THEN 1 ELSE 0 END) as positivas,
+               SUM(CASE WHEN cerrado=1 AND resultado_pct <= 0 THEN 1 ELSE 0 END) as negativas,
+               SUM(CASE WHEN cerrado=0 THEN 1 ELSE 0 END) as abiertas,
+               ROUND(SUM(CASE WHEN cerrado=1 THEN COALESCE(resultado_pct,0) ELSE 0 END), 2) as gan_total,
+               ROUND(AVG(CASE WHEN cerrado=1 THEN resultado_pct ELSE NULL END), 2) as gan_prom
+        FROM senales
+        GROUP BY fecha
+        ORDER BY fecha DESC
+        LIMIT 30
+    """)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def registrar_ganancia_dia_real(par: str, ganancia_pct_pionex: float):
+    conn = _conn()
+    cur = conn.cursor()
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute("INSERT INTO señales_del_dia (fecha, par, ganancia) VALUES (?,?,?)",
+                (hoy, par, ganancia_pct_pionex))
+    conn.commit()
+    conn.close()
+
+
+def pausar_par(par: str, motivo: str, horas: int = 24):
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    hasta = ahora + timedelta(hours=horas)
+    try:
+        cur.execute("""
+            INSERT OR REPLACE INTO pares_pausados (par, motivo, desde, hasta)
+            VALUES (?,?,?,?)
+        """, (par, motivo, ahora.isoformat(), hasta.isoformat()))
+        conn.commit()
+    except Exception:
+        pass
+    conn.close()
+
+
+def par_esta_pausado(par: str) -> bool:
+    conn = _conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT hasta FROM pares_pausados WHERE par = ?", (par,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return False
+        hasta = datetime.fromisoformat(row["hasta"])
+        if datetime.now(TZ_ARG) >= hasta:
+            despausar_par(par)
+            return False
+        return True
+    except Exception:
+        conn.close()
+        return False
+
+
+def despausar_par(par: str):
+    conn = _conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM pares_pausados WHERE par = ?", (par,))
+        conn.commit()
+    except Exception:
+        pass
+    conn.close()
+
+
+def pares_pausados_activos() -> list:
+    conn = _conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM pares_pausados")
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return [r for r in rows if par_esta_pausado(r["par"])]
+    except Exception:
+        conn.close()
+        return []
+
+
+def ultimos_resultados_par(par: str, n: int = 2) -> list:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT resultado_pct FROM senales
+        WHERE par = ? AND cerrado = 1 AND resultado_pct IS NOT NULL
+        ORDER BY id DESC LIMIT ?
+    """, (par, n))
+    rows = [r["resultado_pct"] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def operaciones_estancadas(horas_limite: float = 12.0) -> list:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM senales WHERE cerrado = 0 AND registrado_pionex = 1")
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    ahora = datetime.now(TZ_ARG)
+    estancadas = []
+    for r in rows:
+        try:
+            apertura = datetime.strptime(
+                f"{r['fecha']} {r['hora_alerta']}", "%Y%m%d %H:%M"
+            ).replace(tzinfo=TZ_ARG)
+            horas_abierta = (ahora - apertura).total_seconds() / 3600
+            if horas_abierta >= horas_limite:
+                r["horas_abierta"] = round(horas_abierta, 1)
+                estancadas.append(r)
+        except Exception:
+            continue
+    return estancadas
 
 
 # ── Resumen matutino (evitar duplicado por día) ─────────────

@@ -109,84 +109,8 @@ def _cmd_cerrar(args: list) -> str:
         return f"⚠️ No encontré una señal abierta reciente de {par}."
 
     db.cerrar_senal(senal["id"], resultado)
-    # Mejora 1: el objetivo diario ahora se alimenta del % REAL de Pionex,
-    # no de la estimación del bot (ganancia_8h_calc).
-    db.registrar_ganancia_dia_real(par, resultado)
-
     nota_pionex = "" if senal["registrado_pionex"] else "\n💡 Tip: la próxima vez usá /registrar antes de /cerrar para poder comparar contra Pionex."
-
-    # Mejora 3: si las últimas 2 operaciones de este par fueron negativas,
-    # sugerir pausa de 24h (no se pausa automático, queda a tu criterio)
-    ultimos = db.ultimos_resultados_par(par, 2)
-    nota_racha = ""
-    if len(ultimos) >= 2 and all(r < 0 for r in ultimos):
-        nota_racha = (
-            f"\n⚠️ {par} lleva {len(ultimos)} resultados negativos seguidos "
-            f"({', '.join(f'{r:+.2f}%' for r in ultimos)}).\n"
-            f"Usá /pausar {args[0]} para excluirlo 24h del análisis si querés."
-        )
-
-    return (f"✅ Cerrado {par} (señal #{senal['id']}) con resultado {resultado:+.2f}%"
-            f"{nota_pionex}{nota_racha}")
-
-
-def _cmd_pausar(args: list) -> str:
-    if len(args) < 1:
-        return "⚠️ Formato: /pausar PAR\nEj: /pausar MANA"
-    par = _quitar_simbolo(args[0])
-    db.pausar_par(par, motivo="manual", horas=24)
-    return f"⏸️ {par} pausado por 24h. No recibirás nuevas señales de este par hasta entonces.\nUsá /reanudar {args[0]} para levantar la pausa antes."
-
-
-def _cmd_reanudar(args: list) -> str:
-    if len(args) < 1:
-        return "⚠️ Formato: /reanudar PAR\nEj: /reanudar MANA"
-    par = _quitar_simbolo(args[0])
-    db.despausar_par(par)
-    return f"▶️ {par} reanudado. Volverá a analizarse en el próximo ciclo."
-
-
-def _cmd_objetivo() -> str:
-    obj = db.obj_diario_db(3.0)
-    estado = "✅ CUBIERTO" if obj["ok"] else f"faltan {obj['faltan']}%"
-    return (
-        f"📅 <b>Objetivo diario (sobre resultado REAL de Pionex)</b>\n"
-        f"Operaciones cerradas hoy: {obj['n']}\n"
-        f"Acumulado real: {obj['total']:+.2f}%\n"
-        f"Estado: {estado}\n\n"
-        f"💡 Este cálculo usa lo que registraste con /cerrar (% real de Pionex, "
-        f"ya neto de reserva), no la estimación teórica del bot."
-    )
-
-
-def _cmd_estancadas() -> str:
-    estancadas = db.operaciones_estancadas(horas_limite=6.0)
-    if not estancadas:
-        return "✅ No hay operaciones abiertas hace más de 6 horas."
-
-    lineas = ["⏳ <b>Operaciones estancadas (+6hs abiertas)</b>\n"]
-    for r in estancadas:
-        lineas.append(
-            f"#{r['id']} {r['par']} {r['direccion']} | {r['horas_abierta']}hs abierta\n"
-            f"   Entrada: {r['precio_entrada']} | Rango Pionex: {r['rango_bajo_pionex']}–{r['rango_alto_pionex']}"
-        )
-    lineas.append(
-        "\n💡 Si sigue dentro de rango pero en pérdida de tendencia hace mucho, "
-        "podés considerar abrir la dirección CONTRARIA con capital nuevo "
-        "(no es obligatorio). Esto diversifica exposición, no es 'doblar la apuesta' "
-        "sobre la misma posición."
-    )
-    return "\n".join(lineas)
-
-
-def _cmd_pausados() -> str:
-    activos = db.pares_pausados_activos()
-    if not activos:
-        return "✅ No hay pares pausados actualmente."
-    lineas = ["⏸️ <b>Pares pausados</b>\n"]
-    for r in activos:
-        lineas.append(f"{r['par']} — motivo: {r['motivo']} | hasta: {r['hasta'][:16]}")
-    return "\n".join(lineas)
+    return f"✅ Cerrado {par} (señal #{senal['id']}) con resultado {resultado:+.2f}%{nota_pionex}"
 
 
 def _cmd_comparar() -> str:
@@ -232,6 +156,75 @@ def _cmd_pendientes() -> str:
     return "\n".join(lineas)
 
 
+def _fmt_resumen(r: dict, titulo: str) -> str:
+    """Formatea un resumen (diario/semanal/mensual) para Telegram."""
+    if r["n"] == 0 and r["n_abiertas"] == 0:
+        return f"📊 <b>{titulo}</b>\nSin operaciones registradas aún."
+
+    lineas = [f"📊 <b>{titulo}</b>", "━━━━━━━━━━━━━━━━━━━━"]
+
+    # Con estancadas
+    lineas.append(f"<b>Todas las operaciones cerradas:</b>")
+    lineas.append(f"  Cerradas: {r['n']} | ✅ {r['n_pos']} ganadoras | ❌ {r['n_neg']} perdedoras")
+    lineas.append(f"  Win rate: {r['win_rate']}%")
+    lineas.append(f"  Ganancia total: <b>{r['gan_total']:+.2f}%</b>")
+    lineas.append(f"  Ganancia promedio: {r['gan_prom']:+.2f}%")
+    if r['n'] > 0:
+        lineas.append(f"  Mejor: {r['mejor']:+.2f}% | Peor: {r['peor']:+.2f}%")
+
+    # Sin estancadas (≤12hs)
+    lineas.append("")
+    lineas.append(f"<b>Sin estancadas (≤12hs de duración):</b>")
+    lineas.append(f"  Operaciones: {r['n_rapidas']}")
+    lineas.append(f"  Win rate: {r['win_rate_sin']}%")
+    lineas.append(f"  Ganancia total: <b>{r['gan_total_sin']:+.2f}%</b>")
+    lineas.append(f"  Ganancia promedio: {r['gan_prom_sin']:+.2f}%")
+
+    # Abiertas
+    if r["n_abiertas"] > 0:
+        lineas.append("")
+        lineas.append(f"⏳ Abiertas (sin cerrar aún): {r['n_abiertas']}")
+
+    return "\n".join(lineas)
+
+
+def _cmd_diario(args: list) -> str:
+    from datetime import datetime, timezone, timedelta
+    TZ_ARG = timezone(timedelta(hours=-3))
+    if args:
+        fecha = args[0].replace("/", "").replace("-", "")
+    else:
+        fecha = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    fecha_fmt = f"{fecha[6:8]}/{fecha[4:6]}/{fecha[0:4]}"
+    r = db.resumen_diario(fecha)
+    return _fmt_resumen(r, f"Resumen del {fecha_fmt}")
+
+
+def _cmd_semanal() -> str:
+    r = db.resumen_semanal()
+    return _fmt_resumen(r, f"Resumen semanal ({r.get('periodo','')})")
+
+
+def _cmd_mensual() -> str:
+    r = db.resumen_mensual()
+    return _fmt_resumen(r, f"Resumen mensual ({r.get('periodo','')})")
+
+
+def _cmd_historial() -> str:
+    dias = db.resumen_por_dia_detalle()
+    if not dias:
+        return "📅 Sin historial de operaciones aún."
+    lineas = ["📅 <b>Historial por día</b> (últimos 30 días)\n━━━━━━━━━━━━━━━━━━━━"]
+    for d in dias:
+        fecha_fmt = f"{d['fecha'][6:8]}/{d['fecha'][4:6]}"
+        signo = "✅" if (d['gan_total'] or 0) >= 0 else "❌"
+        lineas.append(
+            f"{fecha_fmt}: {signo} {(d['gan_total'] or 0):+.2f}% | "
+            f"C:{d['positivas']}✅ {d['negativas']}❌ | Abiertas:{d['abiertas']}"
+        )
+    return "\n".join(lineas)
+
+
 def procesar_comando(texto: str) -> str:
     partes = texto.strip().split()
     if not partes:
@@ -247,16 +240,14 @@ def procesar_comando(texto: str) -> str:
         return _cmd_comparar()
     elif cmd == "/pendientes":
         return _cmd_pendientes()
-    elif cmd == "/pausar":
-        return _cmd_pausar(args)
-    elif cmd == "/reanudar":
-        return _cmd_reanudar(args)
-    elif cmd == "/objetivo":
-        return _cmd_objetivo()
-    elif cmd == "/estancadas":
-        return _cmd_estancadas()
-    elif cmd == "/pausados":
-        return _cmd_pausados()
+    elif cmd == "/diario":
+        return _cmd_diario(args)
+    elif cmd == "/semanal":
+        return _cmd_semanal()
+    elif cmd == "/mensual":
+        return _cmd_mensual()
+    elif cmd == "/historial":
+        return _cmd_historial()
     elif cmd in ("/ayuda", "/help", "/start"):
         return (
             "🤖 <b>Comandos disponibles</b>\n\n"
@@ -264,22 +255,23 @@ def procesar_comando(texto: str) -> str:
             "  Anotá lo que Pionex te ofreció al crear el bot.\n"
             "  Ej: /registrar ALGO 10 0.395 0.410 120\n\n"
             "/cerrar PAR RESULTADO_PCT\n"
-            "  Anotá el resultado final (% real de Pionex) al cerrar.\n"
+            "  Anotá el resultado final cuando cerrás el bot en Pionex.\n"
             "  Ej: /cerrar ALGO -11.95\n\n"
             "/comparar\n"
             "  Ve cómo le fue al cálculo del bot vs. el preset Balanceada.\n\n"
             "/pendientes\n"
             "  Lista señales abiertas sin registrar o cerrar.\n\n"
-            "/objetivo\n"
-            "  Progreso del día hacia el 3%, sobre resultado REAL (no estimado).\n\n"
-            "/estancadas\n"
-            "  Operaciones abiertas hace +6hs. Sugiere considerar hedge.\n\n"
-            "/pausar PAR  /reanudar PAR\n"
-            "  Excluye o reincluye un par del análisis automático.\n\n"
-            "/pausados\n"
-            "  Lista pares pausados actualmente."
+            "/diario [FECHA]\n"
+            "  Resumen del día (con y sin estancadas).\n"
+            "  Ej: /diario  o  /diario 20260630\n\n"
+            "/semanal\n"
+            "  Resumen de los últimos 7 días.\n\n"
+            "/mensual\n"
+            "  Resumen de los últimos 30 días.\n\n"
+            "/historial\n"
+            "  Ganancia/pérdida por día, últimos 30 días."
         )
-    return None  # No es un comando reconocido
+    return None
 
 
 def revisar_updates():
