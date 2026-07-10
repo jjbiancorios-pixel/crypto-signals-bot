@@ -561,10 +561,12 @@ def generar_alertas(forzar_corto=False):
         enviadas=0
         for r in resultados[:MAX_ALERTAS]:
             # Evitar abrir una segunda grilla en un par que YA tiene una
-            # operación sin cerrar (rotación rápida: se puede volver a
-            # entrar en el mismo par apenas cierra la anterior, pero
-            # nunca dos grillas simultáneas sobre el mismo par).
-            if db.ultima_senal_par(r["par"]) is not None:
+            # operación sin cerrar — SOLO aplica con automatización activa,
+            # porque ahí el bot sabe con certeza qué está abierto en Pionex
+            # (bu_order_id). En modo manual, esto dependería de que el
+            # usuario siempre haga /cerrar, y si se olvida un solo par,
+            # ese par queda bloqueado para siempre sin querer.
+            if AUTOMATIZACION_ACTIVA and db.ultima_senal_par(r["par"]) is not None:
                 continue
 
             # Clave por VELA (15 min), no por hora: permite re-alertar el
