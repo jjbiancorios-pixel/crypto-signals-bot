@@ -24,6 +24,26 @@ def _conn():
     return conn
 
 
+def _migrar_columnas_riesgo(cur):
+    """
+    Agrega columnas nuevas para automatización (capital, zona de riesgo,
+    bu_order_id de Pionex) a la tabla senales si todavía no existen.
+    SQLite no soporta 'ADD COLUMN IF NOT EXISTS', así que se ignora el
+    error si la columna ya está.
+    """
+    columnas_nuevas = [
+        ("bu_order_id", "TEXT"),
+        ("capital_asignado", "REAL"),
+        ("zona_riesgo", "TEXT DEFAULT 'verde'"),
+        ("capital_apartado", "REAL DEFAULT 0"),
+    ]
+    for nombre, tipo in columnas_nuevas:
+        try:
+            cur.execute(f"ALTER TABLE senales ADD COLUMN {nombre} {tipo}")
+        except Exception:
+            pass  # ya existe
+
+
 def init_db():
     """Crea las tablas si no existen. Llamar una vez al iniciar el bot."""
     conn = _conn()
@@ -107,6 +127,8 @@ def init_db():
             hasta TEXT
         )
     """)
+
+    _migrar_columnas_riesgo(cur)
 
     conn.commit()
     conn.close()
@@ -521,3 +543,102 @@ def marcar_resumen_enviado(fecha: str):
     cur.execute("INSERT OR IGNORE INTO resumen_enviado (fecha) VALUES (?)", (fecha,))
     conn.commit()
     conn.close()
+
+
+# ── Capital y zona de riesgo (automatización Pionex) ────────
+def guardar_bu_order_id(senal_id: int, bu_order_id: str, capital_asignado: float):
+    """Guarda el ID del bot de Pionex y el capital (9%) usado, tras crear la grilla real."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE senales SET bu_order_id = ?, capital_asignado = ?
+        WHERE id = ?
+    """, (bu_order_id, capital_asignado, senal_id))
+    conn.commit()
+    conn.close()
+
+
+def actualizar_zona_riesgo(senal_id: int, zona: str, capital_apartado: float = 0):
+    """
+    Actualiza la zona de riesgo (verde/amarilla/roja) de una operación abierta,
+    y cuánto capital extra tiene apartado (5% en amarilla, se libera en verde).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE senales SET zona_riesgo = ?, capital_apartado = ?
+        WHERE id = ?
+    """, (zona, capital_apartado, senal_id))
+    conn.commit()
+    conn.close()
+
+
+def operaciones_abiertas_con_bu_order() -> list:
+    """Operaciones abiertas y ya registradas en Pionex, con bu_order_id para monitorear."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM senales
+        WHERE cerrado = 0 AND registrado_pionex = 1 AND bu_order_id IS NOT NULL
+    """)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def contar_atascadas_riesgo() -> int:
+    """
+    Cuenta operaciones abiertas en zona amarilla o roja (NO por tiempo).
+    Este es el número que activa el modo restrictivo al llegar a 3.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*) FROM senales
+        WHERE cerrado = 0 AND zona_riesgo IN ('amarilla', 'roja')
+    """)
+    count = cur.fetchone()[0]
+    conn.close()
+    return count
+
+
+def capital_comprometido_total() -> float:
+    """Suma del capital ya asignado a operaciones abiertas (9% c/u)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COALESCE(SUM(capital_asignado), 0) FROM senales
+        WHERE cerrado = 0
+    """)
+    total = cur.fetchone()[0]
+    conn.close()
+    return float(total)
+
+
+def capital_apartado_total() -> float:
+    """Suma del capital apartado (5% extra) por operaciones en zona amarilla/roja."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COALESCE(SUM(capital_apartado), 0) FROM senales
+        WHERE cerrado = 0 AND zona_riesgo IN ('amarilla', 'roja')
+    """)
+    total = cur.fetchone()[0]
+    conn.close()
+    return float(total)
+
+
+def ganancia_hoy_pct(capital_total: float) -> float:
+    """% de ganancia ya logrado hoy sobre el capital total (para el objetivo del 3%)."""
+    conn = _conn()
+    cur = conn.cursor()
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute("""
+        SELECT COALESCE(SUM(resultado_pct * capital_asignado / 100), 0)
+        FROM senales WHERE fecha = ? AND cerrado = 1
+    """, (hoy,))
+    ganancia_usd = cur.fetchone()[0]
+    conn.close()
+    if capital_total <= 0:
+        return 0.0
+    return round((ganancia_usd / capital_total) * 100, 2)

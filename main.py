@@ -7,6 +7,14 @@ from datetime import datetime, timezone, timedelta
 import os
 import db
 import telegram_cmds
+import gestion_riesgo
+import pionex_api
+
+# ── Automatización (feature flag) ───────────────────────────
+# Se activa recién cuando PIONEX_API_KEY/SECRET estén cargadas y probadas.
+# Mientras esté en "false", el bot sigue funcionando EXACTAMENTE igual que
+# hoy (solo avisa por Telegram, sin abrir grillas ni operar 24hs).
+AUTOMATIZACION_ACTIVA = os.environ.get("AUTOMATIZACION_ACTIVA", "false").lower() == "true"
 
 # ── Configuración ──────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8761617567:AAGbH0Vgb-13kVZppZ-fwZHT6QngI8ZkYOo")
@@ -445,6 +453,7 @@ def analizar_par(par, btc, forzar_corto=False):
     precio_max_largo=round(precio*(1+margen_entrada_pct/100),6)
     precio_min_corto=round(precio*(1-margen_entrada_pct/100),6)
 
+    grid = calcular_grid(precio, atr_pct, score)
     return {
         "par":par,"precio":precio,"score":score,"score_max":16,"pct":pct,
         "prob":"🟢 ALTA","prob_n":3,"direccion":direccion,"razones":razones,
@@ -452,6 +461,7 @@ def analizar_par(par, btc, forzar_corto=False):
         "precio_max_largo":precio_max_largo,
         "precio_min_corto":precio_min_corto,
         "margen_entrada_pct":margen_entrada_pct,
+        **grid,
     }
 
 
@@ -550,9 +560,49 @@ def generar_alertas(forzar_corto=False):
 
         enviadas=0
         for r in resultados[:MAX_ALERTAS]:
-            clave=f"{r['par']}_{datetime.now(TZ_ARG).strftime('%Y%m%d_%H')}"
+            # Evitar abrir una segunda grilla en un par que YA tiene una
+            # operación sin cerrar (rotación rápida: se puede volver a
+            # entrar en el mismo par apenas cierra la anterior, pero
+            # nunca dos grillas simultáneas sobre el mismo par).
+            if db.ultima_senal_par(r["par"]) is not None:
+                continue
+
+            # Clave por VELA (15 min), no por hora: permite re-alertar el
+            # mismo par varias veces en la misma hora si la operación
+            # anterior ya cerró (rotación rápida de capital).
+            vela = (datetime.now(TZ_ARG).minute // 15) * 15
+            clave=f"{r['par']}_{datetime.now(TZ_ARG).strftime('%Y%m%d_%H')}{vela:02d}"
             if db.alerta_existe(clave): continue
             db.marcar_alerta_enviada(clave)
+
+            senal_id = db.guardar_senal(r)
+
+            apertura_auto = None
+            if AUTOMATIZACION_ACTIVA:
+                check = gestion_riesgo.verificar_seguridad_apertura()
+                if check["permitido"]:
+                    try:
+                        # Confirmado: Pionex NO expone las grillas recomendadas
+                        # vía API (esa función solo existe en la app/web como
+                        # "AI Strategy"). Se usa el fallback fijo de 67 grillas.
+                        resp = pionex_api.crear_grilla_futuros(
+                            par=r["par"].replace("USDT", ""),
+                            top=r["rango_alto"],
+                            bottom=r["rango_bajo"],
+                            row=67,
+                            capital_usdt=check["capital_operacion"],
+                            trend="long" if r["direccion"] == "📈 LARGO" else "short",
+                        )
+                        bu_order_id = resp.get("data", {}).get("buOrderId")
+                        if bu_order_id:
+                            db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
+                            apertura_auto = f"✅ Grilla abierta automáticamente (USD {check['capital_operacion']:.2f})"
+                        else:
+                            apertura_auto = f"⚠️ Pionex no devolvió buOrderId: {resp}"
+                    except Exception as e:
+                        apertura_auto = f"⚠️ Error al abrir grilla automática: {e}"
+                else:
+                    apertura_auto = f"⛔ No se abrió automáticamente: {check['motivo']}"
 
             # Margen de entrada
             if r["direccion"]=="📈 LARGO":
@@ -586,16 +636,17 @@ def generar_alertas(forzar_corto=False):
                 f"Precio actual: {r['precio']:.6g} USDT\n"
                 f"{margen_txt}\n"
                 f"{prog_txt}"
-                f"{funding_txt}\n\n"
-                f"── <b>ANÁLISIS TÉCNICO</b> ──\n"
+                f"{funding_txt}\n"
+                + (f"\n{apertura_auto}\n" if apertura_auto else "") +
+                f"\n── <b>ANÁLISIS TÉCNICO</b> ──\n"
                 +"\n".join(f"  {s}" for s in r["razones"][:8])+
                 f"\n\nBTC: {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f}) | {btc['estado']}\n"
-                f"📝 /registrar {par_corto} APAL RANGO_BAJO RANGO_ALTO GRILLAS\n"
-                f"🕐 {ahora} hs (ARG)"
+                + ("" if AUTOMATIZACION_ACTIVA and apertura_auto and "✅" in apertura_auto
+                   else f"📝 /registrar {par_corto} APAL RANGO_BAJO RANGO_ALTO GRILLAS\n")
+                + f"🕐 {ahora} hs (ARG)"
             )
             enviar_telegram(msg)
             registrar_señal(r["par"], 1.35)
-            db.guardar_senal(r)
             programar_cierre(r["par"],r["direccion"],r["precio"],1.0,1.35,1.35)
             enviadas+=1
             print(f"  ✅ {r['par']} {r['direccion']} score={r['score']}")
@@ -667,10 +718,20 @@ def main():
         f"Comandos: /ayuda"
     )
 
-    for h_arg in range(7,23):
+    for h_arg in (range(0,24) if AUTOMATIZACION_ACTIVA else range(7,23)):
         h_utc=(h_arg+3)%24
         schedule.every().day.at(f"{h_utc:02d}:03").do(generar_alertas)
         schedule.every().day.at(f"{h_utc:02d}:33").do(generar_alertas)
+
+    if AUTOMATIZACION_ACTIVA:
+        def _monitorear():
+            try:
+                acciones = gestion_riesgo.monitorear_zonas_riesgo()
+                if acciones:
+                    enviar_telegram("🛡️ <b>Monitoreo de riesgo</b>\n" + "\n".join(acciones))
+            except Exception as e:
+                print(f"Error monitoreando riesgo: {e}")
+        schedule.every(30).minutes.do(_monitorear)
 
     h_res_utc=(9+3)%24
     schedule.every().day.at(f"{h_res_utc:02d}:03").do(resumen_matutino)
