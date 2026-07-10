@@ -235,7 +235,7 @@ def _cmd_probar_pionex(args: list) -> str:
     """
     if len(args) < 2:
         return "Uso: /probar_pionex PAR PRECIO_ACTUAL\nEj: /probar_pionex BTC 63000"
-    par = _quitar_simbolo(args[0])
+    par = args[0].upper().strip().replace("USDT", "")
     precio = _parse_float(args[1])
     if precio is None:
         return "⚠️ El precio tiene que ser un número. Ej: /probar_pionex BTC 63000"
