@@ -593,6 +593,7 @@ def generar_alertas(forzar_corto=False):
                             bottom=r["rango_bajo"],
                             row=67,
                             capital_usdt=check["capital_operacion"],
+                            leverage=10,  # FIJO: decisión confirmada, siempre 10x
                             trend="long" if r["direccion"] == "📈 LARGO" else "short",
                         )
                         bu_order_id = resp.get("data", {}).get("buOrderId")

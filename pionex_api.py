@@ -77,7 +77,7 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
 
 
 def validar_parametros_grilla(par: str, top: float, bottom: float, row: int,
-                               capital_usdt: float, leverage: int = 1,
+                               capital_usdt: float, leverage: int = 10,  # FIJO: 10x siempre, decisión confirmada por Juanjo
                                trend: str = "long",
                                grid_type: str = "arithmetic") -> dict:
     """
@@ -200,7 +200,7 @@ def reforzar_margen(bu_order_id: str, monto_extra_usdt: float, precio_actual: fl
 
 
 def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
-                          capital_usdt: float, leverage: int = 1,
+                          capital_usdt: float, leverage: int = 10,  # FIJO: 10x siempre, decisión confirmada por Juanjo
                           trend: str = "long",
                           grid_type: str = "arithmetic") -> dict:
     """

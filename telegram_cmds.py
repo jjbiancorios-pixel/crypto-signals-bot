@@ -230,15 +230,19 @@ def _cmd_probar_pionex(args: list) -> str:
     Prueba la conexión con la API de Pionex SIN crear ninguna orden real.
     Llama a checkParams (solo valida y estima), para confirmar que la
     firma HMAC y las keys cargadas en Railway funcionan bien.
-    Uso: /probar_pionex PAR PRECIO_ACTUAL
-    Ej:  /probar_pionex BTC 63000
+    Uso: /probar_pionex PAR PRECIO_ACTUAL [LEVERAGE] [CAPITAL_USD]
+    Ej:  /probar_pionex ALGO 0.20
+    Ej:  /probar_pionex BTC 64000 5 100
     """
     if len(args) < 2:
-        return "Uso: /probar_pionex PAR PRECIO_ACTUAL\nEj: /probar_pionex BTC 63000"
+        return "Uso: /probar_pionex PAR PRECIO_ACTUAL [LEVERAGE] [CAPITAL_USD]\nEj: /probar_pionex ALGO 0.20"
     par = args[0].upper().strip().replace("USDT", "")
     precio = _parse_float(args[1])
     if precio is None:
-        return "⚠️ El precio tiene que ser un número. Ej: /probar_pionex BTC 63000"
+        return "⚠️ El precio tiene que ser un número. Ej: /probar_pionex ALGO 0.20"
+
+    leverage = int(_parse_float(args[2])) if len(args) > 2 and _parse_float(args[2]) else 10
+    capital = _parse_float(args[3]) if len(args) > 3 and _parse_float(args[3]) else 50
 
     top = round(precio * 1.03, 6)
     bottom = round(precio * 0.97, 6)
@@ -246,11 +250,12 @@ def _cmd_probar_pionex(args: list) -> str:
     try:
         import pionex_api
         resultado = pionex_api.validar_parametros_grilla(
-            par=par, top=top, bottom=bottom, row=67, capital_usdt=90
+            par=par, top=top, bottom=bottom, row=67,
+            capital_usdt=capital, leverage=leverage
         )
         return (
             f"🧪 <b>Prueba Pionex — {par}</b> (sin crear orden real)\n"
-            f"Rango probado: {bottom}–{top} | 67 grillas | USD 90\n\n"
+            f"Rango: {bottom}–{top} | 67 grillas | {leverage}x | USD {capital}\n\n"
             f"<code>{resultado}</code>"
         )
     except Exception as e:
