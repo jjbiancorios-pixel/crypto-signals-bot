@@ -83,7 +83,7 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
     precision = obtener_precision_par(base)
 
     return {
-        "base": base,
+        "base": f"{base}.PERP",
         "quote": "USDT",
         "buOrderData": {
             "top": str(round(top, precision)),
