@@ -51,19 +51,43 @@ def _firmar(method: str, path: str, query: str, body: str = "") -> tuple:
     return timestamp, firma
 
 
+def obtener_precision_par(par: str) -> int:
+    """
+    Consulta GET /common/symbols para saber cuántos decimales acepta
+    Pionex en el precio (quotePrecision) para este par específico.
+    Cada par tiene su propia precisión — usar un valor fijo para todos
+    causa el error 'top not match quote precision'.
+    Si falla la consulta, devuelve 4 como default razonable.
+    """
+    base = par.upper().replace("USDT", "").replace(".PERP", "")
+    symbol = f"{base}_USDT_PERP"
+    path = "/api/v1/common/symbols"
+    query = f"symbols={symbol}&type=PERP"
+    timestamp, firma = _firmar("GET", path, query)
+    headers = {"PIONEX-KEY": PIONEX_API_KEY, "PIONEX-SIGNATURE": firma}
+    url = f"{PIONEX_BASE_URL}{path}?{query}&timestamp={timestamp}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=10).json()
+        symbolsList = resp.get("data", {}).get("symbols", [])
+        if symbolsList:
+            return int(symbolsList[0].get("quotePrecision", 4))
+    except Exception:
+        pass
+    return 4
+
+
 def _armar_body(par: str, top: float, bottom: float, row: int,
                  capital_usdt: float, leverage: int, trend: str,
                  grid_type: str) -> dict:
-    base = par.upper()
-    if not base.endswith(".PERP"):
-        base = f"{base}.PERP"
+    base = par.upper().replace("USDT", "").replace(".PERP", "")
+    precision = obtener_precision_par(base)
 
     return {
         "base": base,
         "quote": "USDT",
         "buOrderData": {
-            "top": str(top),
-            "bottom": str(bottom),
+            "top": str(round(top, precision)),
+            "bottom": str(round(bottom, precision)),
             "row": row,
             "grid_type": grid_type,
             "trend": trend,
