@@ -225,6 +225,38 @@ def _cmd_historial() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_probar_pionex(args: list) -> str:
+    """
+    Prueba la conexión con la API de Pionex SIN crear ninguna orden real.
+    Llama a checkParams (solo valida y estima), para confirmar que la
+    firma HMAC y las keys cargadas en Railway funcionan bien.
+    Uso: /probar_pionex PAR PRECIO_ACTUAL
+    Ej:  /probar_pionex BTC 63000
+    """
+    if len(args) < 2:
+        return "Uso: /probar_pionex PAR PRECIO_ACTUAL\nEj: /probar_pionex BTC 63000"
+    par = _quitar_simbolo(args[0])
+    precio = _parse_float(args[1])
+    if precio is None:
+        return "⚠️ El precio tiene que ser un número. Ej: /probar_pionex BTC 63000"
+
+    top = round(precio * 1.03, 6)
+    bottom = round(precio * 0.97, 6)
+
+    try:
+        import pionex_api
+        resultado = pionex_api.validar_parametros_grilla(
+            par=par, top=top, bottom=bottom, row=67, capital_usdt=90
+        )
+        return (
+            f"🧪 <b>Prueba Pionex — {par}</b> (sin crear orden real)\n"
+            f"Rango probado: {bottom}–{top} | 67 grillas | USD 90\n\n"
+            f"<code>{resultado}</code>"
+        )
+    except Exception as e:
+        return f"⚠️ Error al conectar con Pionex: {e}"
+
+
 def procesar_comando(texto: str) -> str:
     partes = texto.strip().split()
     if not partes:
@@ -248,6 +280,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_mensual()
     elif cmd == "/historial":
         return _cmd_historial()
+    elif cmd == "/probar_pionex":
+        return _cmd_probar_pionex(args)
     elif cmd in ("/ayuda", "/help", "/start"):
         return (
             "🤖 <b>Comandos disponibles</b>\n\n"
@@ -269,7 +303,10 @@ def procesar_comando(texto: str) -> str:
             "/mensual\n"
             "  Resumen de los últimos 30 días.\n\n"
             "/historial\n"
-            "  Ganancia/pérdida por día, últimos 30 días."
+            "  Ganancia/pérdida por día, últimos 30 días.\n\n"
+            "/probar_pionex PAR PRECIO_ACTUAL\n"
+            "  Prueba la conexión con Pionex (sin crear orden real).\n"
+            "  Ej: /probar_pionex BTC 63000"
         )
     return None
 
