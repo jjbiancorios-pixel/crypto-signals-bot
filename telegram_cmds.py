@@ -262,6 +262,23 @@ def _cmd_probar_pionex(args: list) -> str:
         return f"⚠️ Error al conectar con Pionex: {e}"
 
 
+def _cmd_pausar_todo(args: list) -> str:
+    motivo = " ".join(args) if args else "sin motivo especificado"
+    db.pausar_todo(motivo)
+    return (
+        f"🛑 <b>Bot PAUSADO</b>\n"
+        f"Motivo: {motivo}\n\n"
+        f"No se van a enviar alertas ni abrir grillas nuevas hasta que "
+        f"uses /reanudar_todo. Las operaciones ya abiertas en Pionex "
+        f"siguen funcionando normalmente (esto no las cierra ni las toca)."
+    )
+
+
+def _cmd_reanudar_todo() -> str:
+    db.reanudar_todo()
+    return "✅ <b>Bot reanudado</b>. Vuelve a analizar y alertar normalmente."
+
+
 def procesar_comando(texto: str) -> str:
     partes = texto.strip().split()
     if not partes:
@@ -287,6 +304,10 @@ def procesar_comando(texto: str) -> str:
         return _cmd_historial()
     elif cmd == "/probar_pionex":
         return _cmd_probar_pionex(args)
+    elif cmd == "/pausar_todo":
+        return _cmd_pausar_todo(args)
+    elif cmd == "/reanudar_todo":
+        return _cmd_reanudar_todo()
     elif cmd in ("/ayuda", "/help", "/start"):
         return (
             "🤖 <b>Comandos disponibles</b>\n\n"
@@ -311,7 +332,12 @@ def procesar_comando(texto: str) -> str:
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"
             "  Prueba la conexión con Pionex (sin crear orden real).\n"
-            "  Ej: /probar_pionex BTC 63000"
+            "  Ej: /probar_pionex BTC 63000\n\n"
+            "/pausar_todo [motivo]\n"
+            "  🛑 Frena TODO el bot (alertas y aperturas automáticas).\n"
+            "  No afecta operaciones ya abiertas en Pionex.\n\n"
+            "/reanudar_todo\n"
+            "  ✅ Reactiva el bot después de /pausar_todo."
         )
     return None
 

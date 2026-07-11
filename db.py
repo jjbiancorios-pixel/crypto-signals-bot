@@ -128,10 +128,44 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS config (
+            clave TEXT PRIMARY KEY,
+            valor TEXT
+        )
+    """)
+
     _migrar_columnas_riesgo(cur)
 
     conn.commit()
     conn.close()
+
+
+# ── Pausa global (freno de emergencia vía Telegram) ──────────
+def pausar_todo(motivo: str = ""):
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("INSERT OR REPLACE INTO config (clave, valor) VALUES ('pausado_global', '1')")
+    cur.execute("INSERT OR REPLACE INTO config (clave, valor) VALUES ('pausado_motivo', ?)", (motivo,))
+    conn.commit()
+    conn.close()
+
+
+def reanudar_todo():
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("INSERT OR REPLACE INTO config (clave, valor) VALUES ('pausado_global', '0')")
+    conn.commit()
+    conn.close()
+
+
+def esta_pausado_global() -> bool:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT valor FROM config WHERE clave = 'pausado_global'")
+    row = cur.fetchone()
+    conn.close()
+    return bool(row and row[0] == "1")
 
 
 # ── Señales (histórico completo) ────────────────────────────
