@@ -73,6 +73,8 @@ def hora_num() -> int:
     return datetime.now(TZ_ARG).hour
 
 def en_horario_operativo() -> bool:
+    if AUTOMATIZACION_ACTIVA:
+        return True
     return HORA_INICIO <= hora_num() < HORA_FIN
 
 
