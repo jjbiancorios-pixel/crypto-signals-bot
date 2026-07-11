@@ -24,6 +24,7 @@ No modifica generar_alertas(), analizar_par() ni calcular_grid().
 import requests
 import os
 import db
+from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
@@ -279,6 +280,46 @@ def _cmd_reanudar_todo() -> str:
     return "✅ <b>Bot reanudado</b>. Vuelve a analizar y alertar normalmente."
 
 
+def _cmd_exportar() -> str:
+    """
+    Exporta TODO el historial de señales (tabla senales completa) a un CSV
+    y lo manda directo como archivo por Telegram — mismo tipo de datos que
+    tenía el Excel original de 177 operaciones, pero generado solo.
+    """
+    import csv
+    import io
+
+    conn = db._conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM senales ORDER BY id")
+    rows = cur.fetchall()
+    columnas = [d[0] for d in cur.description]
+    conn.close()
+
+    if not rows:
+        return "No hay señales registradas todavía para exportar."
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(columnas)
+    for row in rows:
+        writer.writerow([row[c] for c in columnas])
+
+    # utf-8-sig: para que Excel abra bien los acentos (ñ, á, etc.)
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+
+    fecha = datetime.now().strftime("%Y%m%d_%H%M")
+    nombre_archivo = f"jj_cripto_bot_historial_{fecha}.csv"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    files = {"document": (nombre_archivo, csv_bytes, "text/csv")}
+    data = {"chat_id": CHAT_ID, "caption": f"📊 Historial completo — {len(rows)} señales registradas"}
+    try:
+        requests.post(url, data=data, files=files, timeout=30)
+        return None  # el archivo ya se mandó directo, no hace falta texto extra
+    except Exception as e:
+        return f"⚠️ Error al exportar: {e}"
+
+
 def procesar_comando(texto: str) -> str:
     partes = texto.strip().split()
     if not partes:
@@ -308,6 +349,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_pausar_todo(args)
     elif cmd == "/reanudar_todo":
         return _cmd_reanudar_todo()
+    elif cmd == "/exportar":
+        return _cmd_exportar()
     elif cmd in ("/ayuda", "/help", "/start"):
         return (
             "🤖 <b>Comandos disponibles</b>\n\n"
@@ -337,7 +380,9 @@ def procesar_comando(texto: str) -> str:
             "  🛑 Frena TODO el bot (alertas y aperturas automáticas).\n"
             "  No afecta operaciones ya abiertas en Pionex.\n\n"
             "/reanudar_todo\n"
-            "  ✅ Reactiva el bot después de /pausar_todo."
+            "  ✅ Reactiva el bot después de /pausar_todo.\n\n"
+            "/exportar\n"
+            "  📊 Manda un CSV con TODO el historial (abrí con Excel)."
         )
     return None
 
