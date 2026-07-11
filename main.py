@@ -507,6 +507,10 @@ def verificar_cierres():
 # ── Generar alertas ────────────────────────────────────────
 def generar_alertas(forzar_corto=False):
     try:
+        if db.esta_pausado_global():
+            print(f"[{hora_arg()}] Bot pausado (/pausar_todo activo)")
+            return
+
         if not en_horario_operativo():
             print(f"[{hora_arg()}] Fuera de horario operativo")
             return
