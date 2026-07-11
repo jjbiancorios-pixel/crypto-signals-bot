@@ -284,24 +284,32 @@ def analizar_btc() -> dict:
 
 
 # ── Grid óptimo ────────────────────────────────────────────
-def calcular_grid(precio, atr_pct, score):
-    rango_pct=atr_pct*3
-    rango_bajo=round(precio*(1-rango_pct/100),6)
-    rango_alto=round(precio*(1+rango_pct/100),6)
-    grillas=max(15,min(200,int(rango_pct/0.20)))
-    pct_grilla=round(rango_pct/grillas,3)
+# Rango fijo ±10% (20% ancho total) y 66 grillas — evidencia real
+# capturada en la app de Pionex el 2026-07-10 sobre 6 pares (APT, ETH,
+# OP, XLM, JTO, ARB), todos con el mismo resultado. Reemplaza al ATR×3
+# anterior (probado y desestimado: demandaba demasiado tiempo para
+# alcanzar el TP). Como verificación cruzada, 20%/66 = 0.303% por
+# grilla, dentro del rango "Ganancia/rejilla 0.23%-0.30%" que la propia
+# app de Pionex mostraba en esos mismos screenshots.
+# Pendiente: re-validar en día de alta volatilidad (ver notas del proyecto).
+RANGO_PCT_LADO = 10.0   # ±10% a cada lado del precio
+GRILLAS_FIJAS = 66
+LEVERAGE_FIJO = 10       # decisión confirmada, coincide con pionex_api.py
 
-    max_apal=max(2,min(20,int(precio/max(precio-rango_bajo*0.80,0.0001))))
-    if atr_pct>=1.5: apal=min(3,max_apal)
-    elif atr_pct>=0.8: apal=min(5,max_apal)
-    elif atr_pct>=0.4: apal=min(7,max_apal)
-    else: apal=min(10,max_apal)
+def calcular_grid(precio, atr_pct, score):
+    rango_pct = RANGO_PCT_LADO
+    rango_bajo = round(precio*(1-rango_pct/100), 6)
+    rango_alto = round(precio*(1+rango_pct/100), 6)
+    grillas = GRILLAS_FIJAS
+    pct_grilla = round((rango_pct*2)/grillas, 3)  # ancho total / grillas
+    apal = LEVERAGE_FIJO
 
     liq_largo=round(precio*(1-1/apal),6); liq_corto=round(precio*(1+1/apal),6)
     dist_liq=round((rango_bajo-liq_largo)/precio*100,2)
     apal_sr=max(2,apal-2)
     liq_largo_sr=round(precio*(1-1/apal_sr),6); liq_corto_sr=round(precio*(1+1/apal_sr),6)
 
+    # Timing sigue dependiendo de la volatilidad real (ATR); solo cambió el rango/grillas
     cruces_hora=(atr_pct*4)/pct_grilla if pct_grilla>0 else 0.1
     cruces_1pct=max(1,int(1.0/(pct_grilla*apal/100)/100))
     horas_1pct=cruces_1pct/cruces_hora*1.8 if cruces_hora>0 else 99
@@ -324,7 +332,7 @@ def calcular_grid(precio, atr_pct, score):
     else: preset="🔴 CONSERVADORA"
 
     return {
-        "rango_bajo":rango_bajo,"rango_alto":rango_alto,"rango_pct":round(rango_pct,2),
+        "rango_bajo":rango_bajo,"rango_alto":rango_alto,"rango_pct":round(rango_pct*2,2),
         "grillas":grillas,"pct_grilla":pct_grilla,"apal":apal,
         "liq_largo":liq_largo,"liq_corto":liq_corto,"dist_liq":dist_liq,
         "tiempo_1pct":t1,"horas_1pct":horas_1pct,"apto":horas_1pct<=8,
@@ -584,14 +592,14 @@ def generar_alertas(forzar_corto=False):
                 check = gestion_riesgo.verificar_seguridad_apertura()
                 if check["permitido"]:
                     try:
-                        # Confirmado: Pionex NO expone las grillas recomendadas
-                        # vía API (esa función solo existe en la app/web como
-                        # "AI Strategy"). Se usa el fallback fijo de 67 grillas.
+                        # ±10% / 66 grillas fijo — ver nota en calcular_grid().
+                        # Ya no se hardcodea 67: se usa r["grillas"], que ahora
+                        # coincide siempre con lo que se le pasó a Pionex.
                         resp = pionex_api.crear_grilla_futuros(
                             par=r["par"].replace("USDT", ""),
                             top=r["rango_alto"],
                             bottom=r["rango_bajo"],
-                            row=67,
+                            row=r["grillas"],
                             capital_usdt=check["capital_operacion"],
                             leverage=10,  # FIJO: decisión confirmada, siempre 10x
                             trend="long" if r["direccion"] == "📈 LARGO" else "short",
@@ -634,7 +642,7 @@ def generar_alertas(forzar_corto=False):
                 f"📌 <b>{r['par']}</b>  {r['direccion']}\n"
                 f"🎰 Score: {r['score']}/{r['score_max']} | {r['prob']}\n\n"
                 f"── <b>ACCIÓN INMEDIATA</b> ──\n"
-                f"Preset Pionex: <b>GRILLAS RECOMENDADAS</b> (o 67 grillas si no aparece)\n"
+                f"Rango: {r['rango_bajo']}–{r['rango_alto']} | Grillas: {r['grillas']} | {r['apal']}x\n"
                 f"Take Profit: <b>1.35%</b>\n"
                 f"Precio actual: {r['precio']:.6g} USDT\n"
                 f"{margen_txt}\n"
@@ -713,7 +721,7 @@ def main():
         f"🤖 <b>JJ Cripto Bot v13 iniciado</b>\n"
         f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
         f"⏰ 7:00-23:00 ARG | :03 y :33 de cada hora\n"
-        f"🎯 Solo ALTA prob. | TP fijo 1.35% + Grillas recomendadas Pionex\n"
+        f"🎯 Solo ALTA prob. | TP fijo 1.35% + Rango ±10%/66 grillas\n"
         f"🔧 RSI ajustado 29/71 | Dirección-primero en scoring\n"
         f"🗑️ Eliminados: RNDR,1000SHIB,CYBER,DYDX,MINA,1000BONK,OP\n"
         f"➕ Nuevos: TON,EIGEN,MOVE,VIRTUAL,PENGU,MOCA,SCR\n"
