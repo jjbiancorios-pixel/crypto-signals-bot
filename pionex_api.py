@@ -132,10 +132,12 @@ def validar_parametros_grilla(par: str, top: float, bottom: float, row: int,
         "quote_investment": bod["quoteInvestment"],
     }
     if "extraMargin" in bod:
-        # NOTA: nombre de campo sin confirmar para checkParams (la doc no
-        # mostró el schema completo de este endpoint). Probar con
-        # /probar_pionex antes de asumir que funciona igual que en create.
-        bod_snake["extra_margin"] = bod["extraMargin"]
+        # Confirmado en la doc oficial (schema real de checkParams):
+        # son DOS campos separados, no uno solo como pensé al principio.
+        bod_snake["extra_margin"] = True
+        bod_snake["extra_margin_amount"] = bod["extraMargin"]
+    else:
+        bod_snake["extra_margin"] = False
     body_dict["buOrderData"] = bod_snake
     body_json = json.dumps(body_dict, separators=(",", ":"))
     timestamp, firma = _firmar("POST", path, "", body_json)
