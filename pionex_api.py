@@ -170,6 +170,53 @@ def consultar_orden(bu_order_id: str) -> dict:
     return resp.json()
 
 
+def calcular_zona_riesgo_por_margen(bu_order_id: str, capital_asignado: float,
+                                     ratio_margen_origen: float,
+                                     ratio_perdida_trigger: float = 1.49) -> dict:
+    """
+    Calcula la zona de riesgo usando 'marginBalance' (equity real restante
+    de la posición) en vez de distancia de precio — más confiable, se
+    confirmó con datos reales del usuario (12/07): a mayor pérdida, menor
+    marginBalance, tendiendo a 0 en la liquidación.
+
+    Lógica (confirmada por el usuario): con inversión+margen partidos al
+    50%, la liquidación ocurre en aprox. -200% de pérdida sobre la
+    INVERSIÓN real (el margen actúa de colchón). Se quiere reforzar
+    margen cuando la pérdida llega a ~-149% de la inversión (deja ~25%
+    de colchón antes de la liquidación real).
+
+    capital_asignado = inversión + margen (lo que ya guarda la DB).
+    """
+    data = consultar_orden(bu_order_id).get("data", {}) or {}
+    bod = data.get("buOrderData", {}) or {}
+
+    margin_balance_str = bod.get("marginBalance")
+    if margin_balance_str is None:
+        return {"zona": "desconocida", "margin_balance": None, "raw": bod}
+
+    margin_balance = float(margin_balance_str)
+    inversion_real = capital_asignado * (1 - ratio_margen_origen)
+    perdida_objetivo_usd = ratio_perdida_trigger * inversion_real
+    umbral_roja = capital_asignado - perdida_objetivo_usd
+    umbral_amarilla = umbral_roja + (capital_asignado * 0.15)  # colchón de aviso previo
+
+    if margin_balance <= umbral_roja:
+        zona = "roja"
+    elif margin_balance <= umbral_amarilla:
+        zona = "amarilla"
+    else:
+        zona = "verde"
+
+    return {
+        "zona": zona,
+        "margin_balance": margin_balance,
+        "umbral_roja": round(umbral_roja, 2),
+        "umbral_amarilla": round(umbral_amarilla, 2),
+        "pct_restante": round(margin_balance / capital_asignado * 100, 1) if capital_asignado else None,
+        "position_open_price": bod.get("positionOpenPrice"),
+    }
+
+
 def calcular_zona_riesgo(bu_order_id: str, precio_actual: float) -> dict:
     """
     Consulta la orden real en Pionex y calcula la zona según distancia a

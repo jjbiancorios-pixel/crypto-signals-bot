@@ -141,10 +141,10 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
             continue
 
         try:
-            # Nota: usar precio_entrada como aproximación si no hay
-            # feed de precio en vivo disponible en este contexto; lo
-            # ideal es pasar el precio actual real del par.
-            resultado = pionex_api.calcular_zona_riesgo(bu_order_id, precio_entrada)
+            resultado = pionex_api.calcular_zona_riesgo_por_margen(
+                bu_order_id, op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION),
+                RATIO_MARGEN_ORIGEN
+            )
         except Exception as e:
             acciones.append(f"⚠️ {par}: error consultando Pionex ({e})")
             continue
@@ -155,22 +155,24 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
         if zona == "verde":
             if zona_anterior != "verde":
                 db.actualizar_zona_riesgo(senal_id, "verde", capital_apartado=0)
-                acciones.append(f"🟢 {par}: volvió a zona segura, capital liberado.")
+                acciones.append(f"🟢 {par}: volvió a zona segura ({resultado.get('pct_restante')}% del colchón), capital liberado.")
 
         elif zona == "amarilla":
             capital_apartar = capital_total * 0.05
             if zona_anterior != "amarilla":
                 db.actualizar_zona_riesgo(senal_id, "amarilla", capital_apartado=capital_apartar)
-                acciones.append(f"🟡 {par}: zona amarilla, se aparta 5% (USD {capital_apartar:.2f}).")
+                acciones.append(f"🟡 {par}: zona amarilla ({resultado.get('pct_restante')}% del colchón), se aparta 5% (USD {capital_apartar:.2f}).")
 
         elif zona == "roja":
             capital_apartado_previo = op.get("capital_apartado") or (capital_total * 0.05)
             if zona_anterior != "roja":
+                precio_ref = resultado.get("position_open_price") or precio_entrada
                 try:
-                    pionex_api.reforzar_margen(bu_order_id, capital_apartado_previo, precio_entrada)
+                    pionex_api.reforzar_margen(bu_order_id, capital_apartado_previo, precio_ref)
                     db.actualizar_zona_riesgo(senal_id, "roja", capital_apartado=capital_apartado_previo)
                     acciones.append(
-                        f"🔴 {par}: zona roja, se reforzó margen con USD {capital_apartado_previo:.2f}."
+                        f"🔴 {par}: zona roja ({resultado.get('pct_restante')}% del colchón), "
+                        f"se reforzó margen con USD {capital_apartado_previo:.2f}."
                     )
                 except Exception as e:
                     acciones.append(f"⚠️ {par}: zona roja pero falló refuerzo de margen ({e})")
