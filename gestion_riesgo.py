@@ -23,30 +23,35 @@ OBJETIVO_DIARIO_PCT = 3
 # porque el reactivo solo no llega a tiempo ante movimientos bruscos entre
 # escaneos (dato real: las 177 operaciones históricas SIEMPRE tuvieron
 # margen de origen, y aun así hubo que reforzar en algunos casos).
-# 0.5 = el margen es 50% de la inversión (ej: inversión 90 USD -> margen 45 USD,
-# 135 USD comprometidos en total por esa operación). Ajustable acá si hace
-# falta más o menos colchón con datos reales de esta semana de prueba.
-RATIO_MARGEN_ORIGEN = 0.5
+#
+# IMPORTANTE (corregido con datos reales del usuario): Pionex REPARTE el
+# capital total entre "inversión real" y "margen", no los suma. Ejemplo
+# real: 52.56 inversión + 47.44 margen = ~100 total, no 100+47. Por eso
+# el 9% de capital por operación (ya fijo, no se toca) se divide acá
+# ~50/50, en vez de comprometer 13.5% como en la versión anterior.
+RATIO_MARGEN_ORIGEN = 0.5  # % del 9% total que va a margen (el resto es inversión real)
 
 
 def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
     """
     Corre el checklist completo ANTES de llamar a pionex_api.crear_grilla_futuros().
     Devuelve {"permitido": bool, "motivo": str, "capital_operacion": float,
-    "margen_origen": float, "capital_total_comprometido": float}.
+    "inversion_real": float, "margen_origen": float}.
 
     Reglas (sección 6 del proyecto, sin reabrir):
     1. Modo restrictivo: si hay >=3 operaciones en zona amarilla/roja
        simultáneas, solo se permite abrir si TODAVÍA no se llegó al 3%
        del capital DISPONIBLE ese día (no del total).
     2. Debe haber capital operativo suficiente (82% del total, menos lo
-       ya comprometido, menos lo apartado por operaciones en riesgo) para
-       cubrir la inversión MÁS el margen de origen — el margen no es
-       capital gratis, también sale del mismo pozo disponible.
+       ya comprometido, menos lo apartado por operaciones en riesgo).
+
+    El 9% de capital por operación SIGUE SIENDO 9% en total (no sube a
+    13.5%) — internamente se reparte entre inversión real y margen de
+    origen, igual que hace Pionex con el preset "Recomendada".
     """
     capital_operacion = capital_total * PCT_CAPITAL_POR_OPERACION
     margen_origen = round(capital_operacion * RATIO_MARGEN_ORIGEN, 2)
-    capital_total_comprometido = round(capital_operacion + margen_origen, 2)
+    inversion_real = round(capital_operacion - margen_origen, 2)
 
     atascadas = db.contar_atascadas_riesgo()
     comprometido = db.capital_comprometido_total()
@@ -72,12 +77,11 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD) -> di
         # Si todavía no se llegó al objetivo, se permite seguir operando
         # PERO igual respetando el límite de capital disponible más abajo.
 
-    if capital_disponible < capital_total_comprometido:
+    if capital_disponible < capital_operacion:
         return {
             "permitido": False,
             "motivo": f"Capital operativo insuficiente: disponible USD {capital_disponible:.2f}, "
-                      f"se necesitan USD {capital_total_comprometido:.2f} "
-                      f"(USD {capital_operacion:.2f} inversión + USD {margen_origen:.2f} margen de origen).",
+                      f"se necesitan USD {capital_operacion:.2f}.",
             "capital_operacion": capital_operacion,
         }
 
@@ -85,8 +89,8 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD) -> di
         "permitido": True,
         "motivo": "OK",
         "capital_operacion": round(capital_operacion, 2),
+        "inversion_real": inversion_real,
         "margen_origen": margen_origen,
-        "capital_total_comprometido": capital_total_comprometido,
         "modo_restrictivo": modo_restrictivo,
         "atascadas": atascadas,
     }

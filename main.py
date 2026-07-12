@@ -599,18 +599,19 @@ def generar_alertas(forzar_corto=False):
                             top=r["rango_alto"],
                             bottom=r["rango_bajo"],
                             row=67,
-                            capital_usdt=check["capital_operacion"],
+                            capital_usdt=check["inversion_real"],
                             leverage=10,  # FIJO: decisión confirmada, siempre 10x
                             trend="long" if r["direccion"] == "📈 LARGO" else "short",
                             extra_margin_usdt=check["margen_origen"],
                         )
                         bu_order_id = resp.get("data", {}).get("buOrderId")
                         if bu_order_id:
-                            db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_total_comprometido"])
+                            db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
                             apertura_auto = (
                                 f"✅ Grilla abierta automáticamente "
-                                f"(USD {check['capital_operacion']:.2f} inversión + "
-                                f"USD {check['margen_origen']:.2f} margen de origen)"
+                                f"(USD {check['inversion_real']:.2f} inversión + "
+                                f"USD {check['margen_origen']:.2f} margen, "
+                                f"USD {check['capital_operacion']:.2f} total)"
                             )
                         else:
                             apertura_auto = f"⚠️ Pionex no devolvió buOrderId: {resp}"
