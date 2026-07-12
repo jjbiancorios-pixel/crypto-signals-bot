@@ -753,6 +753,56 @@ def main():
     h_res_utc=(9+3)%24
     schedule.every().day.at(f"{h_res_utc:02d}:03").do(resumen_matutino)
 
+    # ── Cronograma de revisión (diario/semanal/mensual) ──────
+    def _recordatorio_diario():
+        try:
+            resumen = telegram_cmds._cmd_diario([])
+            enviar_telegram(
+                f"📋 <b>Chequeo diario</b>\n"
+                f"{resumen}\n\n"
+                f"👀 Revisá: ¿corrió sin errores? ¿algún par quedó trabado "
+                f"sin /cerrar? ¿hace falta /pausar_todo por algo puntual?"
+            )
+        except Exception as e:
+            print(f"Error recordatorio diario: {e}")
+
+    def _recordatorio_semanal():
+        try:
+            resumen = telegram_cmds._cmd_semanal()
+            enviar_telegram(
+                f"📈 <b>Revisión semanal</b>\n"
+                f"{resumen}\n\n"
+                f"👀 Revisá: win rate de la semana, cuántas veces se reforzó "
+                f"margen (zona 🔴), y si el ratio actual de margen de origen "
+                f"({round(gestion_riesgo.RATIO_MARGEN_ORIGEN*100)}%) sigue siendo el correcto."
+            )
+        except Exception as e:
+            print(f"Error recordatorio semanal: {e}")
+
+    def _recordatorio_mensual():
+        try:
+            if datetime.now(TZ_ARG).day != 1:
+                return  # el schedule corre diario, pero el contenido solo sale el día 1
+            resumen = telegram_cmds._cmd_mensual()
+            enviar_telegram(
+                f"🗓️ <b>Revisión mensual de parámetros</b>\n"
+                f"{resumen}\n\n"
+                f"👀 Revisá si siguen vigentes: 9% de capital por operación, "
+                f"score mínimo 11, apalancamiento 10x, ratio de margen, "
+                f"lista de 79 pares (¿alguno dejó de estar en Pionex?)."
+            )
+        except Exception as e:
+            print(f"Error recordatorio mensual: {e}")
+
+    h_diario_utc = (21+3) % 24    # 21:30 ARG
+    schedule.every().day.at(f"{h_diario_utc:02d}:30").do(_recordatorio_diario)
+
+    h_semanal_utc = (20+3) % 24   # domingos 20:00 ARG
+    schedule.every().sunday.at(f"{h_semanal_utc:02d}:00").do(_recordatorio_semanal)
+
+    h_mensual_utc = (9+3) % 24    # día 1 de cada mes, 09:00 ARG (chequea internamente la fecha)
+    schedule.every().day.at(f"{h_mensual_utc:02d}:00").do(_recordatorio_mensual)
+
     if en_horario_operativo():
         generar_alertas()
 
