@@ -673,6 +673,24 @@ def operaciones_abiertas_con_bu_order() -> list:
     return rows
 
 
+def cerrar_senal_automatica(senal_id: int, resultado_pct: float):
+    """
+    Marca una señal como cerrada cuando la automatización DETECTA (vía API)
+    que Pionex ya cerró la grilla — libera el capital comprometido para que
+    vuelva a estar disponible para nuevas operaciones. Sin esto, las
+    operaciones cerradas quedaban marcadas como abiertas para siempre,
+    bloqueando capital fantasma (bug encontrado y corregido 12/07).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE senales SET cerrado = 1, resultado_pct = ?
+        WHERE id = ?
+    """, (resultado_pct, senal_id))
+    conn.commit()
+    conn.close()
+
+
 def contar_atascadas_riesgo() -> int:
     """
     Cuenta operaciones abiertas en zona amarilla o roja (NO por tiempo).

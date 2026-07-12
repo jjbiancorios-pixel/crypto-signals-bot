@@ -180,13 +180,18 @@ def calcular_zona_riesgo(bu_order_id: str, precio_actual: float) -> dict:
 
     Usa 'liquidationPrice' si el bot ya lo calculó en tiempo real; si no está
     disponible todavía, cae a la estimación 'estimateLiquidationPriceUp/Down'.
+
+    IMPORTANTE: estos campos vienen anidados dentro de 'buOrderData', NO al
+    nivel superior de 'data' — bug corregido (antes leía del lugar
+    equivocado y nunca encontraba el precio de liquidación real).
     """
     data = consultar_orden(bu_order_id).get("data", {}) or {}
+    bod = data.get("buOrderData", {}) or {}
 
     liq_price_str = (
-        data.get("liquidationPrice")
-        or data.get("estimateLiquidationPriceDown")
-        or data.get("estimateLiquidationPriceUp")
+        bod.get("liquidationPrice")
+        or bod.get("estimateLiquidationPriceDown")
+        or bod.get("estimateLiquidationPriceUp")
     )
     if not liq_price_str or float(liq_price_str) == 0:
         return {"zona": "desconocida", "distancia_pct": None, "raw": data}
@@ -205,9 +210,43 @@ def calcular_zona_riesgo(bu_order_id: str, precio_actual: float) -> dict:
         "zona": zona,
         "distancia_pct": round(distancia_pct, 2),
         "liquidation_price": liq_price,
-        "risk_status": data.get("riskStatus"),
-        "margin_status": data.get("marginStatus"),
+        "risk_status": bod.get("riskStatus"),
+        "orden_status": bod.get("status"),  # "prepare"/"running"/etc — para detectar cierre
+        "orden_reason": bod.get("reasonBy"),  # motivo del cierre si ya cerró
     }
+
+
+def esta_cerrada(bu_order_id: str) -> dict:
+    """
+    Detecta si una grilla YA CERRÓ en Pionex (tocó TP, se canceló, o se
+    liquidó) — el bot no tenía forma de saberlo antes, así que las
+    operaciones cerradas quedaban marcadas como abiertas para siempre en
+    la base, bloqueando capital fantasma. Se llama junto con el monitoreo
+    de riesgo cada 30 min.
+
+    Devuelve {"cerrada": bool, "motivo": str|None, "profit_stop_pct": float|None}.
+    """
+    data = consultar_orden(bu_order_id).get("data", {}) or {}
+    bod = data.get("buOrderData", {}) or {}
+    status_top = (data.get("status") or "").lower()
+    status_bod = (bod.get("status") or "").lower()
+    reason = bod.get("reasonBy")
+
+    # Estados que indican que la grilla ya no está corriendo (no confirmado
+    # al 100% cuáles son todos los valores posibles — revisar si aparece
+    # un estado nuevo que no se detecte acá)
+    cerrada = status_top in ("finished", "closed", "cancelled", "canceled") or \
+              status_bod in ("finished", "closed", "cancelled", "canceled", "stopped")
+
+    profit_stop_pct = None
+    if cerrada and reason and "profit" in str(reason).lower():
+        # Se cerró tocando el take profit fijo -> el resultado es el TP configurado
+        try:
+            profit_stop_pct = float(bod.get("profitStop", TAKE_PROFIT_PCT)) * 100
+        except (ValueError, TypeError):
+            profit_stop_pct = TAKE_PROFIT_PCT * 100
+
+    return {"cerrada": cerrada, "motivo": reason, "profit_stop_pct": profit_stop_pct}
 
 
 def reforzar_margen(bu_order_id: str, monto_extra_usdt: float, precio_actual: float) -> dict:

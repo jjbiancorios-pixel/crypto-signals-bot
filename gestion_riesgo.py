@@ -114,6 +114,32 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
         par = op["par"]
         precio_entrada = op["precio_entrada"]
 
+        # PASO 1: ¿ya cerró en Pionex? Si sí, liberar capital y no seguir
+        # chequeando zona de riesgo sobre una operación que ya no existe.
+        try:
+            estado_cierre = pionex_api.esta_cerrada(bu_order_id)
+        except Exception as e:
+            acciones.append(f"⚠️ {par}: error consultando cierre ({e})")
+            continue
+
+        if estado_cierre.get("cerrada"):
+            resultado_pct = estado_cierre.get("profit_stop_pct")
+            if resultado_pct is not None:
+                db.cerrar_senal_automatica(senal_id, resultado_pct)
+                acciones.append(f"✅ {par}: cerrada en Pionex (TP {resultado_pct:.2f}%), capital liberado.")
+            else:
+                # Cerró pero no pudimos confirmar el resultado exacto (no
+                # fue por TP normal — podría ser cierre manual o
+                # liquidación). Se marca cerrada igual para liberar el
+                # capital fantasma, pero con resultado 0% hasta que se
+                # confirme manualmente con /cerrar.
+                db.cerrar_senal_automatica(senal_id, 0.0)
+                acciones.append(
+                    f"⚠️ {par}: cerrada en Pionex (motivo: {estado_cierre.get('motivo')}), "
+                    f"capital liberado, pero VERIFICÁ el resultado real y corregilo con /cerrar."
+                )
+            continue
+
         try:
             # Nota: usar precio_entrada como aproximación si no hay
             # feed de precio en vivo disponible en este contexto; lo

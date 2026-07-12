@@ -226,6 +226,38 @@ def _cmd_historial() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_debug_orden(args: list) -> str:
+    """
+    Diagnóstico: muestra los datos CRUDOS que devuelve Pionex para la
+    operación abierta de un par (sin adivinar campos). Sirve para
+    confirmar contra la app cuál es el campo real de "Ganancia total"
+    antes de confiar en un cálculo automático con capital real.
+    Uso: /debug_orden PAR
+    Ej:  /debug_orden CRV
+    """
+    if len(args) < 1:
+        return "Uso: /debug_orden PAR\nEj: /debug_orden CRV"
+    par_completo = args[0].upper().strip()
+    if not par_completo.endswith("USDT"):
+        par_completo += "USDT"
+
+    senal = db.ultima_senal_par(par_completo)
+    if not senal or not senal.get("bu_order_id"):
+        return f"⚠️ No encontré una operación automática abierta de {par_completo} (sin bu_order_id)."
+
+    try:
+        import pionex_api
+        resultado = pionex_api.consultar_orden(senal["bu_order_id"])
+        bod = resultado.get("data", {}).get("buOrderData", {})
+        return (
+            f"🔍 <b>Debug — {par_completo}</b>\n"
+            f"Inversión guardada: USD {senal.get('capital_asignado')}\n\n"
+            f"<code>{bod}</code>"
+        )
+    except Exception as e:
+        return f"⚠️ Error: {e}"
+
+
 def _cmd_probar_pionex(args: list) -> str:
     """
     Prueba la conexión con la API de Pionex SIN crear ninguna orden real.
@@ -355,6 +387,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_reanudar_todo()
     elif cmd == "/exportar":
         return _cmd_exportar()
+    elif cmd == "/debug_orden":
+        return _cmd_debug_orden(args)
     elif cmd in ("/ayuda", "/help", "/start"):
         return (
             "🤖 <b>Comandos disponibles</b>\n\n"
