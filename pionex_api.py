@@ -78,42 +78,51 @@ def obtener_precision_par(par: str) -> int:
 
 def _armar_body(par: str, top: float, bottom: float, row: int,
                  capital_usdt: float, leverage: int, trend: str,
-                 grid_type: str) -> dict:
+                 grid_type: str, extra_margin_usdt: float = 0) -> dict:
     base = par.upper().replace("USDT", "").replace(".PERP", "")
     precision = obtener_precision_par(base)
+
+    bu_order_data = {
+        "top": str(round(top, precision)),
+        "bottom": str(round(bottom, precision)),
+        "row": row,
+        "grid_type": grid_type,
+        "trend": trend,
+        "leverage": leverage,
+        "quoteInvestment": str(capital_usdt),
+        "investmentFrom": "USER",
+        "profitStopType": "profit_ratio",
+        "profitStop": str(TAKE_PROFIT_PCT),
+    }
+    if extra_margin_usdt and extra_margin_usdt > 0:
+        # Margen de origen (dinámico): reservado desde la apertura, baja el
+        # precio de liquidación en LARGO / lo sube en CORTO. Sin esto, el
+        # campo queda vacío y Pionex no reserva nada (lo confirmamos con
+        # pruebas reales: estimateExtraMargin devolvía 0).
+        bu_order_data["extraMargin"] = str(round(extra_margin_usdt, 2))
 
     return {
         "base": f"{base}.PERP",
         "quote": "USDT",
-        "buOrderData": {
-            "top": str(round(top, precision)),
-            "bottom": str(round(bottom, precision)),
-            "row": row,
-            "grid_type": grid_type,
-            "trend": trend,
-            "leverage": leverage,
-            "quoteInvestment": str(capital_usdt),
-            "investmentFrom": "USER",
-            "profitStopType": "profit_ratio",
-            "profitStop": str(TAKE_PROFIT_PCT),
-        },
+        "buOrderData": bu_order_data,
     }
 
 
 def validar_parametros_grilla(par: str, top: float, bottom: float, row: int,
                                capital_usdt: float, leverage: int = 10,  # FIJO: 10x siempre, decisión confirmada por Juanjo
                                trend: str = "long",
-                               grid_type: str = "arithmetic") -> dict:
+                               grid_type: str = "arithmetic",
+                               extra_margin_usdt: float = 0) -> dict:
     """
     Llama a /futuresGrid/checkParams — NO crea una orden real.
     Sirve para validar rango, capital mínimo/máximo y estimar liquidación
     ANTES de arriesgar capital real. Usar siempre primero en pruebas.
     """
     path = "/api/v1/bot/orders/futuresGrid/checkParams"
-    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type)
+    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type, extra_margin_usdt)
     # checkParams usa nombres en snake_case dentro de buOrderData según doc
     bod = body_dict["buOrderData"]
-    body_dict["buOrderData"] = {
+    bod_snake = {
         "top": bod["top"],
         "bottom": bod["bottom"],
         "row": bod["row"],
@@ -122,6 +131,12 @@ def validar_parametros_grilla(par: str, top: float, bottom: float, row: int,
         "leverage": bod["leverage"],
         "quote_investment": bod["quoteInvestment"],
     }
+    if "extraMargin" in bod:
+        # NOTA: nombre de campo sin confirmar para checkParams (la doc no
+        # mostró el schema completo de este endpoint). Probar con
+        # /probar_pionex antes de asumir que funciona igual que en create.
+        bod_snake["extra_margin"] = bod["extraMargin"]
+    body_dict["buOrderData"] = bod_snake
     body_json = json.dumps(body_dict, separators=(",", ":"))
     timestamp, firma = _firmar("POST", path, "", body_json)
 
@@ -226,16 +241,20 @@ def reforzar_margen(bu_order_id: str, monto_extra_usdt: float, precio_actual: fl
 def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
                           capital_usdt: float, leverage: int = 10,  # FIJO: 10x siempre, decisión confirmada por Juanjo
                           trend: str = "long",
-                          grid_type: str = "arithmetic") -> dict:
+                          grid_type: str = "arithmetic",
+                          extra_margin_usdt: float = 0) -> dict:
     """
     Crea una grilla de futuros REAL en Pionex.
 
     par: ej. "BTC" (se arma automáticamente como "BTC.PERP")
     top / bottom / row: valores RECOMENDADOS por Pionex (no predeterminados)
     capital_usdt: 9% del capital total, ya calculado antes de llamar a esta función
+    extra_margin_usdt: margen de origen (colchón reservado desde la apertura,
+        no es capital adicional "de la nada" — se descuenta del capital
+        disponible total antes de abrir, ver gestion_riesgo.py)
     """
     path = "/api/v1/bot/orders/futuresGrid/create"
-    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type)
+    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type, extra_margin_usdt)
     body_json = json.dumps(body_dict, separators=(",", ":"))
     timestamp, firma = _firmar("POST", path, "", body_json)
 

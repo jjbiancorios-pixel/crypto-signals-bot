@@ -469,10 +469,11 @@ def analizar_par(par, btc, forzar_corto=False):
 
 # ── Contador diario (persistente en SQLite) ─────────────────
 def registrar_señal(par, ganancia):
-    db.registrar_ganancia_dia(par, ganancia)
+    db.registrar_ganancia_dia(par, ganancia)  # se mantiene solo por compatibilidad histórica
 
 def obj_diario():
-    return db.obj_diario_db(OBJETIVO_DIARIO)
+    capital_total = gestion_riesgo.CAPITAL_TOTAL_USD
+    return db.obj_diario_real_db(OBJETIVO_DIARIO, capital_total)
 
 
 
@@ -601,11 +602,16 @@ def generar_alertas(forzar_corto=False):
                             capital_usdt=check["capital_operacion"],
                             leverage=10,  # FIJO: decisión confirmada, siempre 10x
                             trend="long" if r["direccion"] == "📈 LARGO" else "short",
+                            extra_margin_usdt=check["margen_origen"],
                         )
                         bu_order_id = resp.get("data", {}).get("buOrderId")
                         if bu_order_id:
-                            db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
-                            apertura_auto = f"✅ Grilla abierta automáticamente (USD {check['capital_operacion']:.2f})"
+                            db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_total_comprometido"])
+                            apertura_auto = (
+                                f"✅ Grilla abierta automáticamente "
+                                f"(USD {check['capital_operacion']:.2f} inversión + "
+                                f"USD {check['margen_origen']:.2f} margen de origen)"
+                            )
                         else:
                             apertura_auto = f"⚠️ Pionex no devolvió buOrderId: {resp}"
                     except Exception as e:
@@ -621,8 +627,9 @@ def generar_alertas(forzar_corto=False):
 
             # Progreso diario
             obj=obj_diario()
-            nuevo_total=round(obj["total"]+1.35,2)
-            prog_txt=(f"📅 Hoy: {obj['total']}% acum. → con esta: ~{nuevo_total}% "
+            contribucion_pct = round(1.35 * gestion_riesgo.PCT_CAPITAL_POR_OPERACION, 4)
+            nuevo_total=round(obj["total"]+contribucion_pct,2)
+            prog_txt=(f"📅 Hoy: {obj['total']}% acum. → si esta gana: ~{nuevo_total}% "
                      f"{'✅' if nuevo_total>=OBJETIVO_DIARIO else f'| Faltan: {round(OBJETIVO_DIARIO-nuevo_total,2)}%'}")
 
             par_corto=r["par"].replace("USDT","")

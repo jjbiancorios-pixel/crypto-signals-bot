@@ -44,6 +44,18 @@ def _migrar_columnas_riesgo(cur):
             pass  # ya existe
 
 
+def _corregir_registrado_pionex_automaticas(cur):
+    """
+    Corrige señales que la automatización ya abrió (tienen bu_order_id)
+    pero quedaron con registrado_pionex=0 por el bug de guardar_bu_order_id
+    (ya corregido). Se ejecuta una sola vez por fila, es seguro repetir.
+    """
+    cur.execute("""
+        UPDATE senales SET registrado_pionex = 1
+        WHERE bu_order_id IS NOT NULL AND registrado_pionex = 0
+    """)
+
+
 def init_db():
     """Crea las tablas si no existen. Llamar una vez al iniciar el bot."""
     conn = _conn()
@@ -136,6 +148,7 @@ def init_db():
     """)
 
     _migrar_columnas_riesgo(cur)
+    _corregir_registrado_pionex_automaticas(cur)
 
     conn.commit()
     conn.close()
@@ -321,6 +334,41 @@ def obj_diario_db(objetivo_diario: float):
     total = round(total, 2)
     return {"n": n, "total": total, "ok": total >= objetivo_diario,
             "faltan": round(max(0, objetivo_diario - total), 2)}
+
+
+def obj_diario_real_db(objetivo_diario: float, capital_total: float = 1000.0) -> dict:
+    """
+    % de ganancia REAL del día sobre el capital total — reemplaza a
+    obj_diario_db(), que sumaba 1.35% fijo por cada alerta ENVIADA sin
+    importar si la operación ganó, perdió, o cuánto capital usó de verdad.
+
+    Esta versión solo cuenta operaciones CERRADAS, con su resultado_pct
+    real, ponderado por el capital que realmente usaron (capital_asignado
+    si está disponible —automatizadas—, o 9% del total como estimación
+    para operaciones manuales viejas que no guardaron ese dato).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute("""
+        SELECT resultado_pct, capital_asignado FROM senales
+        WHERE fecha = ? AND cerrado = 1 AND resultado_pct IS NOT NULL
+    """, (hoy,))
+    rows = cur.fetchall()
+    conn.close()
+
+    ganancia_usd = 0.0
+    for resultado_pct, capital_asignado in rows:
+        capital_op = capital_asignado if capital_asignado else capital_total * 0.09
+        ganancia_usd += (resultado_pct / 100) * capital_op
+
+    total_pct = round((ganancia_usd / capital_total) * 100, 2) if capital_total > 0 else 0.0
+    return {
+        "n": len(rows),
+        "total": total_pct,
+        "ok": total_pct >= objetivo_diario,
+        "faltan": round(max(0, objetivo_diario - total_pct), 2),
+    }
 
 
 # ── Operaciones abiertas (recordatorio de cierre) ───────────
@@ -581,11 +629,16 @@ def marcar_resumen_enviado(fecha: str):
 
 # ── Capital y zona de riesgo (automatización Pionex) ────────
 def guardar_bu_order_id(senal_id: int, bu_order_id: str, capital_asignado: float):
-    """Guarda el ID del bot de Pionex y el capital (9%) usado, tras crear la grilla real."""
+    """
+    Guarda el ID del bot de Pionex y el capital comprometido (inversión +
+    margen) tras crear la grilla automática real. Marca registrado_pionex=1
+    porque ya tenemos el dato real de Pionex (bu_order_id) — mejor que un
+    /registrar manual — así /pendientes no la marca como "falta registrar".
+    """
     conn = _conn()
     cur = conn.cursor()
     cur.execute("""
-        UPDATE senales SET bu_order_id = ?, capital_asignado = ?
+        UPDATE senales SET bu_order_id = ?, capital_asignado = ?, registrado_pionex = 1
         WHERE id = ?
     """, (bu_order_id, capital_asignado, senal_id))
     conn.commit()

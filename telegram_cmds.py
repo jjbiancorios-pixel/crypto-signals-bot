@@ -231,12 +231,13 @@ def _cmd_probar_pionex(args: list) -> str:
     Prueba la conexión con la API de Pionex SIN crear ninguna orden real.
     Llama a checkParams (solo valida y estima), para confirmar que la
     firma HMAC y las keys cargadas en Railway funcionan bien.
-    Uso: /probar_pionex PAR PRECIO_ACTUAL [LEVERAGE] [CAPITAL_USD]
+    Uso: /probar_pionex PAR PRECIO_ACTUAL [LEVERAGE] [CAPITAL_USD] [MARGEN_USD]
     Ej:  /probar_pionex ALGO 0.20
     Ej:  /probar_pionex BTC 64000 5 100
+    Ej:  /probar_pionex BTC 64000 10 90 45   (con margen de origen)
     """
     if len(args) < 2:
-        return "Uso: /probar_pionex PAR PRECIO_ACTUAL [LEVERAGE] [CAPITAL_USD]\nEj: /probar_pionex ALGO 0.20"
+        return "Uso: /probar_pionex PAR PRECIO_ACTUAL [LEVERAGE] [CAPITAL_USD] [MARGEN_USD]\nEj: /probar_pionex ALGO 0.20"
     par = args[0].upper().strip().replace("USDT", "")
     precio = _parse_float(args[1])
     if precio is None:
@@ -244,6 +245,7 @@ def _cmd_probar_pionex(args: list) -> str:
 
     leverage = int(_parse_float(args[2])) if len(args) > 2 and _parse_float(args[2]) else 10
     capital = _parse_float(args[3]) if len(args) > 3 and _parse_float(args[3]) else 50
+    margen = _parse_float(args[4]) if len(args) > 4 and _parse_float(args[4]) else 0
 
     top = round(precio * 1.03, 6)
     bottom = round(precio * 0.97, 6)
@@ -252,11 +254,13 @@ def _cmd_probar_pionex(args: list) -> str:
         import pionex_api
         resultado = pionex_api.validar_parametros_grilla(
             par=par, top=top, bottom=bottom, row=67,
-            capital_usdt=capital, leverage=leverage
+            capital_usdt=capital, leverage=leverage, extra_margin_usdt=margen
         )
         return (
             f"🧪 <b>Prueba Pionex — {par}</b> (sin crear orden real)\n"
-            f"Rango: {bottom}–{top} | 67 grillas | {leverage}x | USD {capital}\n\n"
+            f"Rango: {bottom}–{top} | 67 grillas | {leverage}x | "
+            f"USD {capital} inversión"
+            + (f" + USD {margen} margen" if margen else "") + "\n\n"
             f"<code>{resultado}</code>"
         )
     except Exception as e:
