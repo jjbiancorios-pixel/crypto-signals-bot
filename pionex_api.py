@@ -266,12 +266,13 @@ def calcular_zona_riesgo(bu_order_id: str, precio_actual: float) -> dict:
 def esta_cerrada(bu_order_id: str) -> dict:
     """
     Detecta si una grilla YA CERRÓ en Pionex (tocó TP, se canceló, o se
-    liquidó) — el bot no tenía forma de saberlo antes, así que las
-    operaciones cerradas quedaban marcadas como abiertas para siempre en
-    la base, bloqueando capital fantasma. Se llama junto con el monitoreo
-    de riesgo cada 30 min.
+    liquidó) y calcula el resultado REAL — confirmado con un cierre real
+    (CRV, 12/07): Ganancia% = (marginBalance - initUsdtInvestment) /
+    quoteInvestment * 100. Antes se asumía 1.35% fijo para cualquier
+    cierre por TP, lo cual no reflejaba fees/slippage reales; ahora sirve
+    para CUALQUIER cierre (ganador, perdedor, o liquidación).
 
-    Devuelve {"cerrada": bool, "motivo": str|None, "profit_stop_pct": float|None}.
+    Devuelve {"cerrada": bool, "motivo": str|None, "resultado_pct": float|None}.
     """
     data = consultar_orden(bu_order_id).get("data", {}) or {}
     bod = data.get("buOrderData", {}) or {}
@@ -279,21 +280,25 @@ def esta_cerrada(bu_order_id: str) -> dict:
     status_bod = (bod.get("status") or "").lower()
     reason = bod.get("reasonBy")
 
-    # Estados que indican que la grilla ya no está corriendo (no confirmado
-    # al 100% cuáles son todos los valores posibles — revisar si aparece
-    # un estado nuevo que no se detecte acá)
+    # Confirmado con datos reales: Pionex usa 'canceled' (una L) para una
+    # grilla que cerró por TP — no 'finished'/'closed' como se suponía al
+    # principio. Se dejan también las otras variantes por las dudas.
     cerrada = status_top in ("finished", "closed", "cancelled", "canceled") or \
               status_bod in ("finished", "closed", "cancelled", "canceled", "stopped")
 
-    profit_stop_pct = None
-    if cerrada and reason and "profit" in str(reason).lower():
-        # Se cerró tocando el take profit fijo -> el resultado es el TP configurado
+    resultado_pct = None
+    if cerrada:
         try:
-            profit_stop_pct = float(bod.get("profitStop", TAKE_PROFIT_PCT)) * 100
+            margin_balance = float(bod.get("marginBalance", 0) or 0)
+            init_investment = float(bod.get("initUsdtInvestment", 0) or 0)
+            quote_investment = float(bod.get("quoteInvestment") or bod.get("initQuoteInvestment") or 0)
+            if quote_investment > 0:
+                ganancia_usd = margin_balance - init_investment
+                resultado_pct = round(ganancia_usd / quote_investment * 100, 4)
         except (ValueError, TypeError):
-            profit_stop_pct = TAKE_PROFIT_PCT * 100
+            resultado_pct = None
 
-    return {"cerrada": cerrada, "motivo": reason, "profit_stop_pct": profit_stop_pct}
+    return {"cerrada": cerrada, "motivo": reason, "resultado_pct": resultado_pct}
 
 
 def reforzar_margen(bu_order_id: str, monto_extra_usdt: float, precio_actual: float) -> dict:

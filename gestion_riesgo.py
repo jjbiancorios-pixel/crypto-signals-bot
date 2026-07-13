@@ -123,16 +123,16 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
             continue
 
         if estado_cierre.get("cerrada"):
-            resultado_pct = estado_cierre.get("profit_stop_pct")
+            resultado_pct = estado_cierre.get("resultado_pct")
             if resultado_pct is not None:
                 db.cerrar_senal_automatica(senal_id, resultado_pct)
-                acciones.append(f"✅ {par}: cerrada en Pionex (TP {resultado_pct:.2f}%), capital liberado.")
+                emoji = "✅" if resultado_pct >= 0 else "🔴"
+                acciones.append(f"{emoji} {par}: cerrada en Pionex ({resultado_pct:+.2f}% real), capital liberado.")
             else:
-                # Cerró pero no pudimos confirmar el resultado exacto (no
-                # fue por TP normal — podría ser cierre manual o
-                # liquidación). Se marca cerrada igual para liberar el
-                # capital fantasma, pero con resultado 0% hasta que se
-                # confirme manualmente con /cerrar.
+                # Cerró pero no pudimos calcular el resultado exacto (faltan
+                # datos de marginBalance/investment en la respuesta). Se
+                # marca cerrada igual para liberar el capital fantasma, pero
+                # con resultado 0% hasta que se confirme manual con /cerrar.
                 db.cerrar_senal_automatica(senal_id, 0.0)
                 acciones.append(
                     f"⚠️ {par}: cerrada en Pionex (motivo: {estado_cierre.get('motivo')}), "

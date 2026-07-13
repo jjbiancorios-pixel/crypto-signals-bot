@@ -198,7 +198,19 @@ def _cmd_diario(args: list) -> str:
         fecha = datetime.now(TZ_ARG).strftime("%Y%m%d")
     fecha_fmt = f"{fecha[6:8]}/{fecha[4:6]}/{fecha[0:4]}"
     r = db.resumen_diario(fecha)
-    return _fmt_resumen(r, f"Resumen del {fecha_fmt}")
+    resumen = _fmt_resumen(r, f"Resumen del {fecha_fmt}")
+
+    # El objetivo diario (ponderado por capital real) solo aplica a HOY —
+    # no tiene sentido para /diario de una fecha pasada.
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    if fecha == hoy:
+        import gestion_riesgo
+        obj = db.obj_diario_real_db(gestion_riesgo.OBJETIVO_DIARIO_PCT, gestion_riesgo.CAPITAL_TOTAL_USD)
+        resumen += (
+            f"\n\n🎯 <b>Objetivo diario:</b> {obj['total']}% de "
+            f"{gestion_riesgo.OBJETIVO_DIARIO_PCT}% | Faltan: {obj['faltan']}%"
+        )
+    return resumen
 
 
 def _cmd_semanal() -> str:
