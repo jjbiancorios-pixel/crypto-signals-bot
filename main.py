@@ -45,7 +45,7 @@ PARES = [
 ]
 
 MIN_SCORE_ALTA  = 11
-MAX_ALERTAS     = 5
+MAX_ALERTAS     = 10
 HORA_INICIO     = 7
 HORA_FIN        = 23   # Hasta las 23hs ARG
 OBJETIVO_DIARIO = 3
@@ -553,7 +553,11 @@ def generar_alertas(forzar_corto=False):
                 print(f"  Error {par}: {e}")
             time.sleep(0.08)
 
-        resultados.sort(key=lambda x:(-x["score"],x["horas_1pct"]))
+        # Desempate por volatilidad real (atr_pct), no por la estimación
+        # teórica de horas_1pct — el análisis de 327 operaciones reales
+        # mostró que la volatilidad correlaciona con velocidad de cierre
+        # (3.59% en 0-1h vs 2.11% en 3-12h), y el score NO predice velocidad.
+        resultados.sort(key=lambda x:(-x["score"],-x["atr_pct"]))
 
         if not resultados:
             if not forzar_corto and btc["estado"]!="EN_MOVIMIENTO":

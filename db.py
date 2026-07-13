@@ -36,6 +36,7 @@ def _migrar_columnas_riesgo(cur):
         ("capital_asignado", "REAL"),
         ("zona_riesgo", "TEXT DEFAULT 'verde'"),
         ("capital_apartado", "REAL DEFAULT 0"),
+        ("razones", "TEXT"),  # detalle completo de indicadores confirmados, para análisis de patrones
     ]
     for nombre, tipo in columnas_nuevas:
         try:
@@ -184,20 +185,22 @@ def esta_pausado_global() -> bool:
 # ── Señales (histórico completo) ────────────────────────────
 def guardar_senal(r: dict) -> int:
     """Guarda una señal recién generada por el bot. Devuelve el id de la fila."""
+    import json
     conn = _conn()
     cur = conn.cursor()
     ahora = datetime.now(TZ_ARG)
+    razones_json = json.dumps(r.get("razones", []), ensure_ascii=False)
     cur.execute("""
         INSERT INTO senales (
             par, fecha, hora_alerta, direccion, score, preset_sugerido,
             precio_entrada, apal_calculado, rango_bajo_calc, rango_alto_calc,
-            rango_pct_calc, grillas_calc, horas_1pct_calc, ganancia_8h_calc
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            rango_pct_calc, grillas_calc, horas_1pct_calc, ganancia_8h_calc, razones
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         r["par"], ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"),
         r["direccion"], r["score"], r["preset"],
         r["precio"], r["apal"], r["rango_bajo"], r["rango_alto"],
-        r["rango_pct"], r["grillas"], r["horas_1pct"], r["ganancia_8h"],
+        r["rango_pct"], r["grillas"], r["horas_1pct"], r["ganancia_8h"], razones_json,
     ))
     conn.commit()
     senal_id = cur.lastrowid
