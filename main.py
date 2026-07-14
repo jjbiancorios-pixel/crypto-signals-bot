@@ -287,7 +287,10 @@ def analizar_btc() -> dict:
 
 # ── Grid óptimo ────────────────────────────────────────────
 def calcular_grid(precio, atr_pct, score):
-    rango_pct=atr_pct*3
+    RANGO_PCT_MINIMO = 3.0  # piso mínimo — evita grillas tan ajustadas que se
+    # rompen con cualquier sacudida de precio (caso real: ZETA/ACE con ATR
+    # bajo quedaron con rango de 1.6-2.1% y se salieron de rango en <2hs)
+    rango_pct=max(atr_pct*3, RANGO_PCT_MINIMO)
     rango_bajo=round(precio*(1-rango_pct/100),6)
     rango_alto=round(precio*(1+rango_pct/100),6)
     grillas=max(15,min(200,int(rango_pct/0.20)))
