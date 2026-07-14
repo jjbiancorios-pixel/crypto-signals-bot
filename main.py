@@ -52,6 +52,7 @@ OBJETIVO_DIARIO = 3
 
 # Umbral de movimiento de BTC para señal de caída brusca (cortos)
 BTC_CAIDA_BRUSCA_PCT = -2.0  # BTC cayó más de 2% en 1h
+BTC_SUBIDA_BRUSCA_PCT = 2.0  # BTC subió más de 2% en 1h (espejo de la caída brusca)
 
 alertas_enviadas     = {}   # se mantiene como caché en RAM; persistencia real en db.alertas_enviadas
 resumen_enviado       = {}  # idem — chequeo real contra db.resumen_ya_enviado
@@ -215,7 +216,7 @@ def correlacion_propia(df15, btc_mov):
 # ── Análisis BTC ───────────────────────────────────────────
 def analizar_btc() -> dict:
     precio_btc = get_precio("BTCUSDT") or 0
-    fuerza=0; detalle=[]; estado="LATERAL"; mov_pct=0.0; caida_brusca=False
+    fuerza=0; detalle=[]; estado="LATERAL"; mov_pct=0.0; caida_brusca=False; subida_brusca=False
 
     df1d=get_velas("BTCUSDT","1d",50)
     df4h=get_velas("BTCUSDT","4h",100)
@@ -241,6 +242,9 @@ def analizar_btc() -> dict:
         if mov_1h <= BTC_CAIDA_BRUSCA_PCT:
             caida_brusca = True
             detalle.append(f"💥 CAÍDA BRUSCA BTC: {mov_1h:.1f}% en 1h → buscar CORTOS")
+        elif mov_1h >= BTC_SUBIDA_BRUSCA_PCT:
+            subida_brusca = True
+            detalle.append(f"🚀 SUBIDA BRUSCA BTC: +{mov_1h:.1f}% en 1h → buscar LARGOS")
 
     if df1h is not None and len(df1h)>=16:
         precio_8h=df1h["close"].iloc[-9]; precio_now=df1h["close"].iloc[-1]
@@ -282,6 +286,7 @@ def analizar_btc() -> dict:
 
     return {"emoji":emoji,"resumen":resumen,"fuerza":fuerza,"precio":precio_btc,
             "detalle":detalle,"estado":estado,"mov_pct":mov_pct,"caida_brusca":caida_brusca,
+            "subida_brusca":subida_brusca,
             "mov_1h":mov_1h}
 
 
@@ -343,8 +348,8 @@ def calcular_grid(precio, atr_pct, score):
 
 
 # ── Análisis de par ────────────────────────────────────────
-def analizar_par(par, btc, forzar_corto=False):
-    if btc["estado"]=="EN_MOVIMIENTO" and not forzar_corto:
+def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
+    if btc["estado"]=="EN_MOVIMIENTO" and not forzar_corto and not forzar_largo:
         df15c=get_velas(par,"15m",20)
         if df15c is None: return None
         if not correlacion_propia(df15c,btc["mov_pct"])["diverge_fuerte"]: return None
@@ -364,6 +369,8 @@ def analizar_par(par, btc, forzar_corto=False):
     # ── PASO 1: determinar dirección CANDIDATA primero ──
     if forzar_corto:
         direccion_cand = "CORTO"
+    elif forzar_largo:
+        direccion_cand = "LARGO"
     elif btc["estado"]=="SUBIO_RANGEA":
         direccion_cand = "LARGO"
     elif btc["estado"]=="BAJO_RANGEA":
@@ -419,6 +426,8 @@ def analizar_par(par, btc, forzar_corto=False):
 
     if forzar_corto:
         score+=2; razones.append(f"✅ BTC caída brusca → CORTO forzado")
+    elif forzar_largo:
+        score+=2; razones.append(f"✅ BTC subida brusca → LARGO forzado")
     elif btc["estado"]=="SUBIO_RANGEA":
         score+=(2 if precio>e20_15 else 1); razones.append(f"✅ BTC post-suba rangeando → LARGO")
     elif btc["estado"]=="BAJO_RANGEA":
@@ -511,7 +520,7 @@ def verificar_cierres():
 
 
 # ── Generar alertas ────────────────────────────────────────
-def generar_alertas(forzar_corto=False):
+def generar_alertas(forzar_corto=False, forzar_largo=False):
     try:
         if db.esta_pausado_global():
             print(f"[{hora_arg()}] Bot pausado (/pausar_todo activo)")
@@ -525,22 +534,37 @@ def generar_alertas(forzar_corto=False):
         print(f"\n[{ahora}] Analizando {len(PARES)} pares...")
         verificar_cierres()
         btc=analizar_btc()
-        print(f"  BTC: {btc['resumen']} ${btc['precio']:,.0f} estado={btc['estado']} caida={btc['caida_brusca']}")
+        print(f"  BTC: {btc['resumen']} ${btc['precio']:,.0f} estado={btc['estado']} caida={btc['caida_brusca']} subida={btc['subida_brusca']}")
 
         obj=obj_diario()
 
-        # Alerta especial de caída brusca de BTC
-        if btc["caida_brusca"] and not forzar_corto:
+        # Alerta especial de caída brusca de BTC — bloquea LARGOS temporalmente
+        # (el bloqueo dura lo que dura la condición: se recalcula desde cero
+        # cada ciclo de 30 min a partir del precio real, no queda un flag
+        # guardado — así que se levanta solo apenas BTC deja de caer fuerte)
+        if btc["caida_brusca"] and not forzar_corto and not forzar_largo:
             enviar_telegram(
                 f"🚨 <b>CAÍDA BRUSCA BTC — {ahora} hs (ARG)</b>\n"
                 f"BTC cayó <b>{btc['mov_1h']:.1f}%</b> en la última hora\n"
                 f"BTC: {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f})\n"
-                f"Buscando mejores pares para CORTO ahora..."
+                f"⛔ Buscando solo CORTOS — LARGOS bloqueados mientras dure esto."
             )
             generar_alertas(forzar_corto=True)
             return
 
-        if btc["estado"]=="EN_MOVIMIENTO" and not forzar_corto:
+        # Alerta especial de subida brusca de BTC — bloquea CORTOS temporalmente
+        # (mismo mecanismo: se recalcula cada ciclo, se levanta solo)
+        if btc["subida_brusca"] and not forzar_corto and not forzar_largo:
+            enviar_telegram(
+                f"🚨 <b>SUBIDA BRUSCA BTC — {ahora} hs (ARG)</b>\n"
+                f"BTC subió <b>+{btc['mov_1h']:.1f}%</b> en la última hora\n"
+                f"BTC: {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f})\n"
+                f"⛔ Buscando solo LARGOS — CORTOS bloqueados mientras dure esto."
+            )
+            generar_alertas(forzar_largo=True)
+            return
+
+        if btc["estado"]=="EN_MOVIMIENTO" and not forzar_corto and not forzar_largo:
             enviar_telegram(
                 f"⚠️ <b>BTC en movimiento — {ahora} hs (ARG)</b>\n"
                 f"Movimiento: <b>{btc['mov_pct']:.1f}%</b> en 8h | {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f})\n"
@@ -550,7 +574,7 @@ def generar_alertas(forzar_corto=False):
         resultados=[]
         for par in PARES:
             try:
-                r=analizar_par(par,btc,forzar_corto)
+                r=analizar_par(par,btc,forzar_corto,forzar_largo)
                 if r: resultados.append(r)
             except Exception as e:
                 print(f"  Error {par}: {e}")
@@ -563,7 +587,7 @@ def generar_alertas(forzar_corto=False):
         resultados.sort(key=lambda x:(-x["score"],-x["atr_pct"]))
 
         if not resultados:
-            if not forzar_corto and btc["estado"]!="EN_MOVIMIENTO":
+            if not forzar_corto and not forzar_largo and btc["estado"]!="EN_MOVIMIENTO":
                 enviar_telegram(
                     f"📊 <b>Análisis {ahora} hs (ARG)</b>\n"
                     f"BTC: {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f}) | {btc['estado']}\n"
@@ -727,6 +751,28 @@ def resumen_matutino():
 
 
 # ── Main ───────────────────────────────────────────────────
+# ── Chequeo liviano de BTC (detección rápida de movimiento brusco) ──
+def _chequeo_btc_rapido():
+    """
+    Corre cada 15 min (:18 y :48), solo consulta BTC (no los 79 pares).
+    Si detecta subida/caída brusca, dispara generar_alertas() completo de
+    inmediato — reacciona hasta 15 min más rápido que esperar al próximo
+    ciclo de :03/:33. Evita quedar con operaciones abiertas en contra de
+    un cambio de tendencia que recién se hubiera detectado media hora después.
+    """
+    try:
+        if db.esta_pausado_global():
+            return
+        if not en_horario_operativo():
+            return
+        btc = analizar_btc()
+        if btc["caida_brusca"] or btc["subida_brusca"]:
+            print(f"[{hora_arg()}] Chequeo rápido BTC: movimiento brusco detectado, análisis completo ahora")
+            generar_alertas()
+    except Exception as e:
+        print(f"Error en chequeo rápido BTC: {e}")
+
+
 def main():
     db.init_db()
     print(f"🤖 Bot v13 iniciado — {len(PARES)} pares")
@@ -746,6 +792,14 @@ def main():
         h_utc=(h_arg+3)%24
         schedule.every().day.at(f"{h_utc:02d}:03").do(generar_alertas)
         schedule.every().day.at(f"{h_utc:02d}:33").do(generar_alertas)
+        # Chequeo liviano de BTC a mitad de camino entre ciclos (:18 y :48) —
+        # NO escanea los 79 pares, solo mira BTC. Si detecta movimiento
+        # brusco (subida o caída >2% en 1h), dispara el análisis completo
+        # al instante en vez de esperar al próximo :03/:33 (hasta 15 min
+        # más rápido de reacción). Reusa toda la lógica de bloqueo/forzado
+        # que ya existe en generar_alertas(), no duplica nada.
+        schedule.every().day.at(f"{h_utc:02d}:18").do(_chequeo_btc_rapido)
+        schedule.every().day.at(f"{h_utc:02d}:48").do(_chequeo_btc_rapido)
 
     if AUTOMATIZACION_ACTIVA:
         def _monitorear():
