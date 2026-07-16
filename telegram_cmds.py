@@ -35,7 +35,7 @@ _ultimo_update_id = 0
 def _api(method: str, **params):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
     try:
-        r = requests.post(url, json=params, timeout=10)
+        r = requests.post(url, json=params, timeout=20)  # margen extra sobre el long-poll de getUpdates (5s)
         return r.json()
     except Exception as e:
         print(f"Telegram API error ({method}): {e}")

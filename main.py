@@ -82,28 +82,31 @@ def en_horario_operativo() -> bool:
 # ── Telegram ───────────────────────────────────────────────
 def enviar_telegram(msg: str):
     """
-    Envía un mensaje a Telegram con reintentos. Antes, un error HTTP de
-    Telegram (ej. rate limit, error momentáneo del servidor) no se
-    detectaba como falla — requests.post() solo lanza excepción por
-    problemas de RED, no por respuestas de error del servidor. Eso hacía
-    que algunos análisis se "perdieran" sin dejar ningún rastro en los
-    logs (bug detectado 16/07, mensajes faltantes cada vez más seguido).
+    Envía un mensaje a Telegram con reintentos.
+
+    IMPORTANTE (aprendido 16/07): un timeout de lectura NO siempre significa
+    que el mensaje no llegó — Telegram puede haber procesado el envío igual,
+    solo que la confirmación tardó más de lo esperado. Reintentar en ese
+    caso manda el mensaje DE NUEVO (duplicado), no lo recupera. Por eso acá
+    se le da más margen de tiempo (25s en vez de 10s) para reducir falsos
+    timeouts, y menos reintentos (2 en vez de 3) — así se prioriza esperar
+    la confirmación real antes de asumir que hace falta reenviar.
     """
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    for intento in range(1, 4):
+    for intento in range(1, 3):
         try:
             resp = requests.post(
-                url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10
+                url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=25
             )
             if resp.status_code == 200:
                 return  # éxito
-            print(f"Telegram respondió error (intento {intento}/3): "
+            print(f"Telegram respondió error (intento {intento}/2): "
                   f"HTTP {resp.status_code} — {resp.text[:200]}")
         except Exception as e:
-            print(f"Telegram error de conexión (intento {intento}/3): {e}")
-        if intento < 3:
-            time.sleep(2)
-    print(f"Telegram: se agotaron los 3 intentos, mensaje perdido: {msg[:80]}...")
+            print(f"Telegram error de conexión (intento {intento}/2): {e}")
+        if intento < 2:
+            time.sleep(3)
+    print(f"Telegram: se agotaron los 2 intentos, mensaje posiblemente perdido: {msg[:80]}...")
 
 
 # ── Datos: cascada Bybit → OKX → Binance Vision ────────────
