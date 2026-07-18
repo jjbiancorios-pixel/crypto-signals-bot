@@ -765,7 +765,7 @@ def resumen_matutino():
                     f"\n{i}. <b>{r['par']}</b> — {r['direccion']} | {r['apal']}x\n"
                     f"   TP: {r['tp_obj']}% | Tiempo: {r['tiempo_1pct']} | {r['preset']}"
                 )
-        lineas+=[f"\n━━━━━━━━━━━━━━━━━━━━",f"🔔 Alertas a los :03 y :33 hs (7:00-23:00 ARG)"]
+        lineas+=[f"\n━━━━━━━━━━━━━━━━━━━━",f"🔔 Alertas cada 15 min (:03, :18, :33, :48 hs)"]
         enviar_telegram("\n".join(lineas))
     except Exception as e:
         print(f"Error resumen: {e}")
@@ -800,7 +800,7 @@ def main():
     enviar_telegram(
         f"🤖 <b>JJ Cripto Bot v13 iniciado</b>\n"
         f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
-        f"⏰ 7:00-23:00 ARG | :03 y :33 de cada hora\n"
+        f"⏰ 7:00-23:00 ARG | cada 15 min (:03, :18, :33, :48)\n"
         f"🎯 Solo ALTA prob. | TP fijo 1.35% + Grillas recomendadas Pionex\n"
         f"🔧 RSI ajustado 29/71 | Dirección-primero en scoring\n"
         f"🗑️ Eliminados: RNDR,1000SHIB,CYBER,DYDX,MINA,1000BONK,OP\n"
@@ -811,16 +811,14 @@ def main():
 
     for h_arg in (range(0,24) if AUTOMATIZACION_ACTIVA else range(7,23)):
         h_utc=(h_arg+3)%24
+        # Escaneo completo cada 15 min (antes cada 30 min con un chequeo
+        # liviano de BTC en el medio). Captura señales que antes se perdían
+        # entre ciclos, sobre todo operaciones que abren y cierran rápido
+        # (mediana histórica de cierre: 6-17 min en varios pares).
         schedule.every().day.at(f"{h_utc:02d}:03").do(generar_alertas)
+        schedule.every().day.at(f"{h_utc:02d}:18").do(generar_alertas)
         schedule.every().day.at(f"{h_utc:02d}:33").do(generar_alertas)
-        # Chequeo liviano de BTC a mitad de camino entre ciclos (:18 y :48) —
-        # NO escanea los 79 pares, solo mira BTC. Si detecta movimiento
-        # brusco (subida o caída >2% en 1h), dispara el análisis completo
-        # al instante en vez de esperar al próximo :03/:33 (hasta 15 min
-        # más rápido de reacción). Reusa toda la lógica de bloqueo/forzado
-        # que ya existe en generar_alertas(), no duplica nada.
-        schedule.every().day.at(f"{h_utc:02d}:18").do(_chequeo_btc_rapido)
-        schedule.every().day.at(f"{h_utc:02d}:48").do(_chequeo_btc_rapido)
+        schedule.every().day.at(f"{h_utc:02d}:48").do(generar_alertas)
 
     if AUTOMATIZACION_ACTIVA:
         def _monitorear():
