@@ -10,12 +10,19 @@ en el proyecto.
 
 import db
 import pionex_api
+from datetime import datetime, timezone, timedelta
+
+TZ_ARG = timezone(timedelta(hours=-3))
 
 CAPITAL_TOTAL_USD = 1000  # TODO: mover a variable de entorno cuando escale
-PCT_OPERATIVO = 0.82
-PCT_CAPITAL_POR_OPERACION = 0.09
-MAX_ATASCADAS_RIESGO = 3
+PCT_OPERATIVO = 0.85  # Actualización 20-21/07: 82% -> 85% (el 15% restante queda de reserva líquida)
+PCT_CAPITAL_POR_OPERACION = 0.06  # Actualización 20-21/07: 9% -> 6% flat
+MAX_ATASCADAS_RIESGO = 6  # Actualización 20-21/07: 3 -> 6
 OBJETIVO_DIARIO_PCT = 3
+
+# Umbral de intervención por duración (cierre a las 10hs si cubre costos)
+HORAS_CIERRE_AUTOMATICO = 10
+RESULTADO_MINIMO_CIERRE_10HS = 0.2  # % — cubre costos/fees, no 0% exacto
 
 # Margen de origen: colchón reservado desde la apertura de cada grilla
 # (además del monitoreo reactivo cada 30 min). Decisión confirmada por
@@ -29,7 +36,7 @@ OBJETIVO_DIARIO_PCT = 3
 # real: 52.56 inversión + 47.44 margen = ~100 total, no 100+47. Por eso
 # el 9% de capital por operación (ya fijo, no se toca) se divide acá
 # ~50/50, en vez de comprometer 13.5% como en la versión anterior.
-RATIO_MARGEN_ORIGEN = 0.5  # % del 9% total que va a margen (el resto es inversión real)
+RATIO_MARGEN_ORIGEN = 0.3  # Actualización 20-21/07: 50% -> 30% (70% inversión / 30% margen)
 
 
 def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
@@ -139,6 +146,32 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
                     f"capital liberado, pero VERIFICÁ el resultado real y corregilo con /cerrar."
                 )
             continue
+
+        # PASO 2: ¿ya pasó el umbral de horas sin cerrar? Si cubre costos
+        # (resultado real ≥ +0.2%), cerrarla ahora para no dejarla llegar
+        # a la "zona crítica" de 12-24hs (dato histórico: 75% win rate y
+        # -22.64% promedio ahí, vs 100%/+1.7% en 0-12hs). Si sigue por
+        # debajo del umbral, NO se toca — se mantiene la regla de nunca
+        # cerrar en pérdida nominal.
+        try:
+            apertura = datetime.strptime(f"{op['fecha']} {op['hora_alerta']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
+            horas_abierta = (datetime.now(TZ_ARG) - apertura).total_seconds() / 3600
+        except Exception:
+            horas_abierta = None
+
+        if horas_abierta is not None and horas_abierta >= HORAS_CIERRE_AUTOMATICO:
+            resultado_actual = pionex_api.calcular_resultado_actual(bu_order_id)
+            if resultado_actual is not None and resultado_actual >= RESULTADO_MINIMO_CIERRE_10HS:
+                try:
+                    pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"Cierre automático {HORAS_CIERRE_AUTOMATICO}hs")
+                    db.cerrar_senal_automatica(senal_id, resultado_actual)
+                    acciones.append(
+                        f"⏱️ {par}: cerrada a las {horas_abierta:.1f}hs con {resultado_actual:+.2f}% "
+                        f"(umbral {RESULTADO_MINIMO_CIERRE_10HS}%), capital liberado."
+                    )
+                    continue
+                except Exception as e:
+                    acciones.append(f"⚠️ {par}: pasó las {HORAS_CIERRE_AUTOMATICO}hs pero falló el cierre automático ({e})")
 
         try:
             resultado = pionex_api.calcular_zona_riesgo_por_margen(

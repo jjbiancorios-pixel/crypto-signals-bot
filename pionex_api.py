@@ -263,6 +263,54 @@ def calcular_zona_riesgo(bu_order_id: str, precio_actual: float) -> dict:
     }
 
 
+def cerrar_grilla_futuros(bu_order_id: str, nota: str = "Cierre automático") -> dict:
+    """
+    POST /futuresGrid/cancel — cierra y cancela una grilla YA ABIERTA.
+    Usar para el cierre automático a las 10hs (o cualquier cierre forzado
+    por lógica propia, no por TP). closeSellModel=TO_QUOTE es el default
+    de Pionex (cierra la posición, no vende a USDT automáticamente).
+    """
+    path = "/api/v1/bot/orders/futuresGrid/cancel"
+    body_dict = {
+        "buOrderId": bu_order_id,
+        "closeNote": nota,
+        "closeSellModel": "TO_QUOTE",
+        "immediate": True,
+        "closeSlippage": "0.01",
+    }
+    body_json = json.dumps(body_dict, separators=(",", ":"))
+    timestamp, firma = _firmar("POST", path, "", body_json)
+
+    headers = {
+        "PIONEX-KEY": PIONEX_API_KEY,
+        "PIONEX-SIGNATURE": firma,
+        "Content-Type": "application/json",
+    }
+    url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
+    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+    return resp.json()
+
+
+def calcular_resultado_actual(bu_order_id: str):
+    """
+    Calcula el % de resultado REAL en este momento para una operación
+    todavía ABIERTA (misma fórmula confirmada con datos reales: 12/07):
+    Ganancia% = (marginBalance - initUsdtInvestment) / quoteInvestment * 100.
+    Se usa para decidir si cerrar a las 10hs (solo si ya cubre costos).
+    """
+    data = consultar_orden(bu_order_id).get("data", {}) or {}
+    bod = data.get("buOrderData", {}) or {}
+    try:
+        margin_balance = float(bod.get("marginBalance", 0) or 0)
+        init_investment = float(bod.get("initUsdtInvestment", 0) or 0)
+        quote_investment = float(bod.get("quoteInvestment") or bod.get("initQuoteInvestment") or 0)
+        if quote_investment <= 0:
+            return None
+        return round((margin_balance - init_investment) / quote_investment * 100, 4)
+    except (ValueError, TypeError):
+        return None
+
+
 def esta_cerrada(bu_order_id: str) -> dict:
     """
     Detecta si una grilla YA CERRÓ en Pionex (tocó TP, se canceló, o se
