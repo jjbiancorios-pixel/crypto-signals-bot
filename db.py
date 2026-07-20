@@ -683,13 +683,27 @@ def cerrar_senal_automatica(senal_id: int, resultado_pct: float):
     vuelva a estar disponible para nuevas operaciones. Sin esto, las
     operaciones cerradas quedaban marcadas como abiertas para siempre,
     bloqueando capital fantasma (bug encontrado y corregido 12/07).
+
+    CORREGIDO 20/07: antes no calculaba tiempo_real_min ni hora_cierre
+    (a diferencia de cerrar_senal, la función del /cerrar manual) — se
+    perdía el dato de duración real para TODOS los cierres automáticos,
+    justo lo que se usa para medir velocidad de rotación.
     """
     conn = _conn()
     cur = conn.cursor()
+    cur.execute("SELECT hora_alerta, fecha FROM senales WHERE id = ?", (senal_id,))
+    row = cur.fetchone()
+    tiempo_real_min = None
+    if row:
+        try:
+            apertura = datetime.strptime(f"{row['fecha']} {row['hora_alerta']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
+            tiempo_real_min = int((datetime.now(TZ_ARG) - apertura).total_seconds() / 60)
+        except Exception:
+            pass
     cur.execute("""
-        UPDATE senales SET cerrado = 1, resultado_pct = ?
+        UPDATE senales SET cerrado = 1, resultado_pct = ?, tiempo_real_min = ?, hora_cierre = ?
         WHERE id = ?
-    """, (resultado_pct, senal_id))
+    """, (resultado_pct, tiempo_real_min, datetime.now(TZ_ARG).strftime("%H:%M"), senal_id))
     conn.commit()
     conn.close()
 
