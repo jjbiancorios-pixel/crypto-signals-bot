@@ -37,7 +37,7 @@ PARES = [
     "JASMYUSDT","JTOUSDT","KASUSDT","MASKUSDT",
     "ONDOUSDT","PYTHUSDT","ROSEUSDT","SSVUSDT",
     "STRKUSDT","SUPERUSDT","TWTUSDT","UMAUSDT","WUSDT",
-    "XAIUSDT","ZETAUSDT","ZRXUSDT",
+    "XAIUSDT","ZETAUSDT","ZRXUSDT","OPUSDT",
     # 7 pares nuevos (reemplazan RNDR, 1000SHIB, CYBER, DYDX, MINA, 1000BONK, OP)
     # Seleccionados por liquidez y disponibilidad confirmada en Pionex
     "TONUSDT","EIGENUSDT","MOVEUSDT","VIRTUALUSDT",
@@ -803,7 +803,8 @@ def main():
         f"⏰ 7:00-23:00 ARG | cada 15 min (:03, :18, :33, :48)\n"
         f"🎯 Solo ALTA prob. | TP fijo 1.35% + Grillas recomendadas Pionex\n"
         f"🔧 RSI ajustado 29/71 | Dirección-primero en scoring\n"
-        f"🗑️ Eliminados: RNDR,1000SHIB,CYBER,DYDX,MINA,1000BONK,OP\n"
+        f"🗑️ Eliminados: RNDR,1000SHIB,CYBER,DYDX,MINA,1000BONK\n"
+        f"➕ Re-agregado: OP (confirmado disponible de nuevo en Pionex, 20/07)\n"
         f"➕ Nuevos: TON,EIGEN,MOVE,VIRTUAL,PENGU,MOCA,SCR\n"
         f"💾 SQLite | 📊 /diario /semanal /mensual /historial\n"
         f"Comandos: /ayuda"
