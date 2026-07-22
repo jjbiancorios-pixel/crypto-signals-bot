@@ -643,14 +643,21 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                 check = gestion_riesgo.verificar_seguridad_apertura()
                 if check["permitido"]:
                     try:
-                        # Confirmado: Pionex NO expone las grillas recomendadas
-                        # vía API (esa función solo existe en la app/web como
-                        # "AI Strategy"). Se usa el fallback fijo de 67 grillas.
+                        # Antes se usaba row=67 fijo, ignorando el cálculo propio
+                        # de r["grillas"] (rango_pct/0.20, adaptado por volatilidad).
+                        # Corregido 22/07: validado con fees reales de Pionex (maker
+                        # 0.02%) que 67 fijo da un espaciado de apenas 1.1x la fee
+                        # ida-y-vuelta en rangos angostos (3%) — casi sin margen real.
+                        # La fórmula propia da 5x la fee siempre, sea cual sea el
+                        # ancho. Ya se guarda en grillas_calc (db.guardar_senal) —
+                        # de acá en más ese valor coincide con lo que Pionex
+                        # realmente usa, permitiendo analizar con datos reales el
+                        # efecto en velocidad de rotación.
                         resp = pionex_api.crear_grilla_futuros(
                             par=r["par"].replace("USDT", ""),
                             top=r["rango_alto"],
                             bottom=r["rango_bajo"],
-                            row=67,
+                            row=r["grillas"],
                             capital_usdt=check["inversion_real"],
                             leverage=10,  # FIJO: decisión confirmada, siempre 10x
                             trend="long" if r["direccion"] == "📈 LARGO" else "short",
