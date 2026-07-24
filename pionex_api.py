@@ -195,7 +195,24 @@ def calcular_zona_riesgo_por_margen(bu_order_id: str, capital_asignado: float,
         return {"zona": "desconocida", "margin_balance": None, "raw": bod}
 
     margin_balance = float(margin_balance_str)
-    inversion_real = capital_asignado * (1 - ratio_margen_origen)
+
+    # CORREGIDO 24/07: antes se calculaba inversion_real asumiendo que el
+    # RATIO_MARGEN_ORIGEN actual del sistema aplicaba a esta operación —
+    # pero si la operación se abrió ANTES de un cambio de ese ratio (ej.
+    # 50/50 antes del 20-21, ahora 70/30), el cálculo quedaba mal y el
+    # umbral podía terminar siendo negativo (inalcanzable) o mal calibrado.
+    # Bug real encontrado 24/07 en una operación de EGLD abierta pre-20-21:
+    # el refuerzo nunca se hubiera disparado con el ratio nuevo aplicado
+    # retroactivamente. Ahora se lee el dato REAL de esa posición puntual
+    # directo de Pionex (quoteInvestment/initQuoteInvestment), sin asumir
+    # ningún ratio — funciona sin importar cuándo se abrió la operación.
+    inversion_real_real = bod.get("quoteInvestment") or bod.get("initQuoteInvestment")
+    if inversion_real_real is not None:
+        inversion_real = float(inversion_real_real)
+    else:
+        # Fallback solo si Pionex no devuelve el dato por algún motivo
+        inversion_real = capital_asignado * (1 - ratio_margen_origen)
+
     perdida_objetivo_usd = ratio_perdida_trigger * inversion_real
     umbral_roja = capital_asignado - perdida_objetivo_usd
     umbral_amarilla = umbral_roja + (capital_asignado * 0.15)  # colchón de aviso previo
