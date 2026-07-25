@@ -172,21 +172,29 @@ def consultar_orden(bu_order_id: str) -> dict:
 
 def calcular_zona_riesgo_por_margen(bu_order_id: str, capital_asignado: float,
                                      ratio_margen_origen: float,
-                                     ratio_perdida_trigger: float = 1.49) -> dict:
+                                     ratio_perdida_trigger: float = None) -> dict:
     """
     Calcula la zona de riesgo usando 'marginBalance' (equity real restante
     de la posición) en vez de distancia de precio — más confiable, se
     confirmó con datos reales del usuario (12/07): a mayor pérdida, menor
     marginBalance, tendiendo a 0 en la liquidación.
 
-    Lógica (confirmada por el usuario): con inversión+margen partidos al
-    50%, la liquidación ocurre en aprox. -200% de pérdida sobre la
-    INVERSIÓN real (el margen actúa de colchón). Se quiere reforzar
-    margen cuando la pérdida llega a ~-149% de la inversión (deja ~25%
-    de colchón antes de la liquidación real).
+    CORREGIDO 24/07: el umbral de refuerzo (antes fijo en 1.49 = -149%) se
+    había calibrado específicamente para el reparto 50/50 (liquidación real
+    en -200% de la inversión). Al pasar a 70/30 en el 20-21, la liquidación
+    real ocurre antes (-142.9%), y el 1.49 fijo quedó DESACTUALIZADO — el
+    aviso hubiera llegado después de la liquidación real, no antes. Bug real
+    encontrado 24/07 comparando ATOM y MANA. Ahora se recalcula siempre en
+    función del ratio_margen_origen vigente, así queda correcto sin importar
+    qué reparto de margen esté configurado en cada momento.
 
     capital_asignado = inversión + margen (lo que ya guarda la DB).
     """
+    if ratio_perdida_trigger is None:
+        # Mismo colchón relativo de siempre (~25.5% antes de la liquidación
+        # real), pero recalculado según el reparto de margen vigente.
+        liquidacion_pct = 1 / (1 - ratio_margen_origen)  # ej. 70/30 -> 1.429 (=-142.9%)
+        ratio_perdida_trigger = 0.745 * liquidacion_pct
     data = consultar_orden(bu_order_id).get("data", {}) or {}
     bod = data.get("buOrderData", {}) or {}
 
