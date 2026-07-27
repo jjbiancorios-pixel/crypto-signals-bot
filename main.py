@@ -15,12 +15,6 @@ import pionex_api
 # Mientras esté en "false", el bot sigue funcionando EXACTAMENTE igual que
 # hoy (solo avisa por Telegram, sin abrir grillas ni operar 24hs).
 AUTOMATIZACION_ACTIVA = os.environ.get("AUTOMATIZACION_ACTIVA", "false").lower() == "true"
-# Interruptor separado de AUTOMATIZACION_ACTIVA a propósito: bloquea SOLO
-# aperturas nuevas (y reaperturas), pero el monitoreo de riesgo (refuerzo
-# de margen en zona amarilla/roja, detección de cierres, liberación de
-# capital) sigue funcionando igual — protege las operaciones ya abiertas
-# mientras se espera a liberar capital, sin apagar nada de seguridad.
-PAUSAR_NUEVAS_OPERACIONES = os.environ.get("PAUSAR_NUEVAS_OPERACIONES", "false").lower() == "true"
 
 # ── Configuración ──────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8761617567:AAGbH0Vgb-13kVZppZ-fwZHT6QngI8ZkYOo")
@@ -645,9 +639,7 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
             senal_id = db.guardar_senal(r)
 
             apertura_auto = None
-            if AUTOMATIZACION_ACTIVA and PAUSAR_NUEVAS_OPERACIONES:
-                apertura_auto = "⏸️ Pausado: no se abren operaciones nuevas (PAUSAR_NUEVAS_OPERACIONES=true)."
-            elif AUTOMATIZACION_ACTIVA:
+            if AUTOMATIZACION_ACTIVA:
                 check = gestion_riesgo.verificar_seguridad_apertura()
                 if check["permitido"]:
                     try:
