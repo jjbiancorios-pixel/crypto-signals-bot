@@ -368,6 +368,69 @@ def _cmd_exportar() -> str:
         return f"⚠️ Error al exportar: {e}"
 
 
+def _cmd_escanear(args: list) -> str:
+    """
+    28/07 — Escaneo manual bajo demanda: corre el MISMO análisis que usa
+    el bot automático (analizar_par de main.py) sobre TODOS los pares,
+    y devuelve el ranking actual — SIN abrir ni registrar nada. Pensado
+    para elegir manualmente una operación de alta convicción (ej. para
+    compensar pérdidas con capital aparte), no reemplaza el flujo
+    automático normal.
+
+    OJO: tarda un buen rato en correr (recorre ~80 pares uno por uno
+    contra Bybit/OKX/Binance) — no te preocupes si no responde al toque.
+
+    Uso: /escanear [cantidad] (default 5)
+    """
+    top_n = int(_parse_float(args[0])) if args and _parse_float(args[0]) else 5
+
+    try:
+        import main as bot_main
+    except Exception as e:
+        return f"⚠️ No pude cargar el módulo de análisis: {e}"
+
+    try:
+        btc = bot_main.analizar_btc()
+    except Exception as e:
+        return f"⚠️ Error analizando BTC: {e}"
+
+    resultados = []
+    errores = 0
+    for par in bot_main.PARES:
+        try:
+            r = bot_main.analizar_par(par, btc)
+            if r:
+                resultados.append(r)
+        except Exception:
+            errores += 1
+            continue
+
+    if not resultados:
+        return (
+            f"⚠️ Ningún par calificó ahora mismo (score≥11 de 16).\n"
+            f"BTC: {btc['emoji']} {btc['resumen']}\n"
+            f"({errores} pares fallaron al consultar, de {len(bot_main.PARES)} totales)"
+        )
+
+    resultados.sort(key=lambda x: x["score"], reverse=True)
+    top = resultados[:top_n]
+
+    lineas = [f"🔍 <b>Escaneo manual</b> — BTC: {btc['emoji']} {btc['resumen']}", ""]
+    for r in top:
+        lineas.append(
+            f"<b>{r['par']}</b> {r['direccion']} | Score: {r['score']}/{r['score_max']}\n"
+            f"  Precio: {r['precio']:.6g} | Rango sugerido: {r['rango_bajo']}–{r['rango_alto']} "
+            f"({r['rango_pct']}%, {r['grillas']} grillas)\n"
+            f"  {' | '.join(r['razones'][:4])}"
+        )
+    lineas.append(
+        f"\n({len(resultados)} de {len(bot_main.PARES)} pares calificaron con score≥11"
+        + (f", {errores} fallaron al consultar" if errores else "") + ")"
+    )
+    lineas.append("\n⚠️ Esto NO es una garantía de resultado — es el mismo ranking que usa el bot, para que decidas vos.")
+    return "\n\n".join(lineas)
+
+
 def procesar_comando(texto: str) -> str:
     partes = texto.strip().split()
     if not partes:
@@ -401,6 +464,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_exportar()
     elif cmd == "/debug_orden":
         return _cmd_debug_orden(args)
+    elif cmd == "/escanear":
+        return _cmd_escanear(args)
     elif cmd in ("/ayuda", "/help", "/start"):
         return (
             "🤖 <b>Comandos disponibles</b>\n\n"
@@ -432,7 +497,10 @@ def procesar_comando(texto: str) -> str:
             "/reanudar_todo\n"
             "  ✅ Reactiva el bot después de /pausar_todo.\n\n"
             "/exportar\n"
-            "  📊 Manda un CSV con TODO el historial (abrí con Excel)."
+            "  📊 Manda un CSV con TODO el historial (abrí con Excel).\n\n"
+            "/escanear [cantidad]\n"
+            "  🔍 Busca a demanda las mejores candidatas ahora mismo (no abre nada).\n"
+            "  Tarda un rato (recorre ~80 pares). Ej: /escanear 5"
         )
     return None
 
