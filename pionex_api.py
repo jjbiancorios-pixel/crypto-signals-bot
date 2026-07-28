@@ -170,6 +170,96 @@ def consultar_orden(bu_order_id: str) -> dict:
     return resp.json()
 
 
+def _precio_bybit(par):
+    r = requests.get(f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={par}", timeout=6)
+    data = r.json()
+    if data.get("retCode") != 0: raise ValueError()
+    return float(data["result"]["list"][0]["lastPrice"])
+
+def _precio_okx(par):
+    inst = par.replace("1000SHIB","SHIB").replace("1000PEPE","PEPE").replace("1000BONK","BONK").replace("USDT","-USDT")
+    r = requests.get(f"https://www.okx.com/api/v5/market/ticker?instId={inst}", timeout=6)
+    rows = r.json().get("data", [])
+    if not rows: raise ValueError()
+    return float(rows[0]["last"])
+
+def _precio_binance(par):
+    r = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={par}", timeout=6)
+    return float(r.json()["price"])
+
+def obtener_precio_mercado(par):
+    """
+    28/07 (fix crítico): precio de mercado en tiempo real, independiente de
+    main.py (evita import circular) — se usa para el chequeo de zona de
+    riesgo por DISTANCIA a liquidación, complementario al de marginBalance.
+    Prueba 3 exchanges en orden hasta conseguir un precio válido.
+    """
+    for f in (_precio_bybit, _precio_okx, _precio_binance):
+        try:
+            p = f(par)
+            if p and p > 0: return p
+        except Exception:
+            continue
+    return None
+
+
+def calcular_zona_riesgo_combinada(bu_order_id: str, capital_asignado: float,
+                                    ratio_margen_origen: float, par: str) -> dict:
+    """
+    FIX CRÍTICO 28/07 — calcular_zona_riesgo_por_margen() sola puede fallar
+    en detectar riesgo real cuando un grid de compra sigue ampliando la
+    posición mientras el precio cae (caso real: ATOM el 27/07 — marginBalance
+    daba zona VERDE con 89.7% del capital, pero el precio estaba a solo
+    2.2% del precio de liquidación real, porque la posición había crecido
+    de 137 a 266 unidades comprando en la baja — el apalancamiento efectivo
+    subió aunque el marginBalance en USDT todavía no había caído tanto).
+
+    Se combinan DOS métodos y se usa el MÁS PESIMISTA de los dos:
+    1. marginBalance vs capital (calcular_zona_riesgo_por_margen)
+    2. distancia % al precio de liquidación real (calcular_zona_riesgo)
+
+    Si un método falla o da "desconocida", se usa el otro. Si ambos fallan,
+    devuelve "desconocida" (no se actúa a ciegas).
+    """
+    orden_severidad = {"verde": 0, "amarilla": 1, "roja": 2}
+
+    try:
+        r_margen = calcular_zona_riesgo_por_margen(bu_order_id, capital_asignado, ratio_margen_origen)
+    except Exception:
+        r_margen = {"zona": "desconocida"}
+
+    precio_actual = obtener_precio_mercado(par)
+    if precio_actual:
+        try:
+            r_distancia = calcular_zona_riesgo(bu_order_id, precio_actual)
+        except Exception:
+            r_distancia = {"zona": "desconocida"}
+    else:
+        r_distancia = {"zona": "desconocida"}
+
+    zona_margen = r_margen.get("zona", "desconocida")
+    zona_distancia = r_distancia.get("zona", "desconocida")
+
+    sev_margen = orden_severidad.get(zona_margen, -1)
+    sev_distancia = orden_severidad.get(zona_distancia, -1)
+
+    if sev_margen >= sev_distancia:
+        zona_final = zona_margen if sev_margen >= 0 else "desconocida"
+        metodo_decisivo = "margen"
+    else:
+        zona_final = zona_distancia
+        metodo_decisivo = "distancia"
+
+    return {
+        "zona": zona_final,
+        "metodo_decisivo": metodo_decisivo,
+        "pct_restante": r_margen.get("pct_restante"),
+        "distancia_pct": r_distancia.get("distancia_pct"),
+        "position_open_price": r_margen.get("position_open_price"),
+        "margin_balance": r_margen.get("margin_balance"),
+    }
+
+
 def calcular_zona_riesgo_por_margen(bu_order_id: str, capital_asignado: float,
                                      ratio_margen_origen: float,
                                      ratio_perdida_trigger: float = None) -> dict:
@@ -184,19 +274,39 @@ def calcular_zona_riesgo_por_margen(bu_order_id: str, capital_asignado: float,
     en -200% de la inversión). Al pasar a 70/30 en el 20-21, la liquidación
     real ocurre antes (-142.9%), y el 1.49 fijo quedó DESACTUALIZADO — el
     aviso hubiera llegado después de la liquidación real, no antes. Bug real
-    encontrado 24/07 comparando ATOM y MANA. Ahora se recalcula siempre en
-    función del ratio_margen_origen vigente, así queda correcto sin importar
-    qué reparto de margen esté configurado en cada momento.
+    encontrado 24/07 comparando ATOM y MANA.
+
+    CORREGIDO 28/07 (parte 2 del mismo bug): el fix del 24/07 recalculaba
+    el umbral en función del ratio_margen_origen VIGENTE en el sistema al
+    momento de chequear — pero eso asume que la operación se abrió con ESE
+    mismo reparto. Si el reparto vuelve a cambiar en una futura actualización
+    mientras quedan operaciones viejas abiertas con el reparto anterior, el
+    mismo bug reaparecería para esas operaciones viejas. Ahora se lee el
+    reparto REAL de cada operación puntual directo de Pionex
+    (initExtraMargin/initUsdtInvestment), en vez de asumir el vigente del
+    sistema — funciona sin importar cuándo se abrió ni cuántas veces haya
+    cambiado el reparto desde entonces. El parámetro ratio_margen_origen
+    queda solo como fallback si Pionex no devuelve esos campos.
 
     capital_asignado = inversión + margen (lo que ya guarda la DB).
     """
-    if ratio_perdida_trigger is None:
-        # Mismo colchón relativo de siempre (~25.5% antes de la liquidación
-        # real), pero recalculado según el reparto de margen vigente.
-        liquidacion_pct = 1 / (1 - ratio_margen_origen)  # ej. 70/30 -> 1.429 (=-142.9%)
-        ratio_perdida_trigger = 0.745 * liquidacion_pct
     data = consultar_orden(bu_order_id).get("data", {}) or {}
     bod = data.get("buOrderData", {}) or {}
+
+    if ratio_perdida_trigger is None:
+        init_extra_margin = bod.get("initExtraMargin")
+        init_usdt_investment = bod.get("initUsdtInvestment")
+        try:
+            if init_extra_margin is not None and init_usdt_investment and float(init_usdt_investment) > 0:
+                ratio_real = float(init_extra_margin) / float(init_usdt_investment)
+            else:
+                ratio_real = ratio_margen_origen
+        except (TypeError, ValueError):
+            ratio_real = ratio_margen_origen
+        # Mismo colchón relativo de siempre (~25.5% antes de la liquidación
+        # real), pero recalculado según el reparto REAL de esta operación.
+        liquidacion_pct = 1 / (1 - ratio_real)  # ej. 70/30 -> 1.429 (=-142.9%)
+        ratio_perdida_trigger = 0.745 * liquidacion_pct
 
     margin_balance_str = bod.get("marginBalance")
     if margin_balance_str is None:

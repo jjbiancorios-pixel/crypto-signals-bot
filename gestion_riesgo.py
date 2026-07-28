@@ -174,9 +174,9 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
                     acciones.append(f"⚠️ {par}: pasó las {HORAS_CIERRE_AUTOMATICO}hs pero falló el cierre automático ({e})")
 
         try:
-            resultado = pionex_api.calcular_zona_riesgo_por_margen(
+            resultado = pionex_api.calcular_zona_riesgo_combinada(
                 bu_order_id, op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION),
-                RATIO_MARGEN_ORIGEN
+                RATIO_MARGEN_ORIGEN, par
             )
         except Exception as e:
             acciones.append(f"⚠️ {par}: error consultando Pionex ({e})")
@@ -191,16 +191,22 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
         capital_asignado_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
         margen_de_esta_operacion = round(capital_asignado_op * RATIO_MARGEN_ORIGEN, 2)
 
+        metodo = resultado.get("metodo_decisivo", "margen")
+        detalle_metodo = (
+            f"{resultado.get('pct_restante')}% del colchón (margen)" if metodo == "margen"
+            else f"{resultado.get('distancia_pct')}% de distancia a liquidación"
+        )
+
         if zona == "verde":
             if zona_anterior != "verde":
                 db.actualizar_zona_riesgo(senal_id, "verde", capital_apartado=0)
-                acciones.append(f"🟢 {par}: volvió a zona segura ({resultado.get('pct_restante')}% del colchón), capital liberado.")
+                acciones.append(f"🟢 {par}: volvió a zona segura ({detalle_metodo}), capital liberado.")
 
         elif zona == "amarilla":
             if zona_anterior != "amarilla":
                 db.actualizar_zona_riesgo(senal_id, "amarilla", capital_apartado=margen_de_esta_operacion)
                 acciones.append(
-                    f"🟡 {par}: zona amarilla ({resultado.get('pct_restante')}% del colchón), "
+                    f"🟡 {par}: zona amarilla ({detalle_metodo}), "
                     f"se aparta USD {margen_de_esta_operacion:.2f} (= margen de origen de esta operación)."
                 )
 
@@ -212,7 +218,7 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
                     pionex_api.reforzar_margen(bu_order_id, monto_refuerzo, precio_ref)
                     db.actualizar_zona_riesgo(senal_id, "roja", capital_apartado=monto_refuerzo)
                     acciones.append(
-                        f"🔴 {par}: zona roja ({resultado.get('pct_restante')}% del colchón), "
+                        f"🔴 {par}: zona roja ({detalle_metodo}), "
                         f"se reforzó margen con USD {monto_refuerzo:.2f}."
                     )
                 except Exception as e:
