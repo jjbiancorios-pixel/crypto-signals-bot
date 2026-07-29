@@ -222,6 +222,50 @@ def ultima_senal_par(par: str):
     return dict(row) if row else None
 
 
+def ultima_senal_par_cualquiera(par: str):
+    """
+    28/07 — Igual que ultima_senal_par, pero SIN filtrar por cerrado=0.
+    Para /corregir: casos donde el bot marcó "cerrada" una operación que en
+    realidad Pionex nunca cerró de verdad (ej. un "Restablecer P&L" manual
+    en la app, que resetea el tracking del bu_order_id sin cerrar la
+    posición real).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM senales WHERE par = ? ORDER BY id DESC LIMIT 1
+    """, (par,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def corregir_senal(senal_id: int, resultado_pct: float, reabrir: bool,
+                    capital_asignado: float = None, bu_order_id: str = None):
+    """
+    28/07 — Corrige una señal que quedó con datos falsos (ej. cierre
+    detectado por error). Si reabrir=True, la vuelve a marcar como abierta
+    (cerrado=0, zona_riesgo='verde', capital_apartado=0) para que el
+    monitoreo de riesgo la retome. Si reabrir=False, solo corrige el
+    resultado_pct de una señal ya cerrada.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    if reabrir:
+        cur.execute("""
+            UPDATE senales SET resultado_pct = ?, cerrado = 0, zona_riesgo = 'verde', capital_apartado = 0
+            WHERE id = ?
+        """, (resultado_pct, senal_id))
+    else:
+        cur.execute("UPDATE senales SET resultado_pct = ?, cerrado = 1 WHERE id = ?", (resultado_pct, senal_id))
+    if capital_asignado is not None:
+        cur.execute("UPDATE senales SET capital_asignado = ? WHERE id = ?", (capital_asignado, senal_id))
+    if bu_order_id is not None:
+        cur.execute("UPDATE senales SET bu_order_id = ? WHERE id = ?", (bu_order_id, senal_id))
+    conn.commit()
+    conn.close()
+
+
 def registrar_datos_pionex(senal_id: int, apal: int, rango_bajo: float, rango_alto: float, grillas: int):
     conn = _conn()
     cur = conn.cursor()

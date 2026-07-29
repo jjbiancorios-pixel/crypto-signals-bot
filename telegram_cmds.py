@@ -114,6 +114,48 @@ def _cmd_cerrar(args: list) -> str:
     return f"✅ Cerrado {par} (señal #{senal['id']}) con resultado {resultado:+.2f}%{nota_pionex}"
 
 
+def _cmd_corregir(args: list) -> str:
+    """
+    28/07 — Corrige una señal que el bot cerró con datos falsos (ej:
+    detectó un cierre porque hiciste "Restablecer P&L" manual en Pionex,
+    que resetea el tracking sin cerrar la posición real).
+
+    Uso: /corregir PAR RESULTADO_PCT [abierta|cerrada] [capital_nuevo] [bu_order_id_nuevo]
+    Ej:  /corregir MOVE -24.8 abierta 81.48
+         (deja MOVE abierta de nuevo, con -24.8% y USD 81.48 de capital)
+
+    Si Pionex generó un bu_order_id NUEVO al resetear (chequealo con
+    /debug_orden PAR — si tira error, cambió), pasalo como 5to parámetro.
+    """
+    if len(args) < 2:
+        return (
+            "⚠️ Formato: /corregir PAR RESULTADO_PCT [abierta|cerrada] [capital_nuevo] [bu_order_id_nuevo]\n"
+            "Ej: /corregir MOVE -24.8 abierta 81.48"
+        )
+    par = _quitar_simbolo(args[0])
+    resultado = _parse_float(args[1])
+    if resultado is None:
+        return "⚠️ Resultado inválido. Usá un número, ej: -24.8"
+    estado = args[2].lower() if len(args) > 2 else "cerrada"
+    if estado not in ("abierta", "cerrada"):
+        return "⚠️ El 3er parámetro debe ser 'abierta' o 'cerrada'."
+    capital_nuevo = _parse_float(args[3]) if len(args) > 3 else None
+    bu_order_id_nuevo = args[4] if len(args) > 4 else None
+
+    senal = db.ultima_senal_par_cualquiera(par)
+    if not senal:
+        return f"⚠️ No encontré ninguna señal de {par} en la base (ni abierta ni cerrada)."
+
+    db.corregir_senal(senal["id"], resultado, reabrir=(estado == "abierta"),
+                       capital_asignado=capital_nuevo, bu_order_id=bu_order_id_nuevo)
+    return (
+        f"✅ Corregido {par} (señal #{senal['id']})\n"
+        f"Resultado: {resultado:+.2f}% | Estado: {estado}"
+        + (f" | Capital: USD {capital_nuevo:.2f}" if capital_nuevo else "")
+        + (f" | bu_order_id: {bu_order_id_nuevo}" if bu_order_id_nuevo else "")
+    )
+
+
 def _cmd_comparar() -> str:
     s = db.stats_comparacion()
     if s["total"] == 0:
@@ -442,6 +484,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_registrar(args)
     elif cmd == "/cerrar":
         return _cmd_cerrar(args)
+    elif cmd == "/corregir":
+        return _cmd_corregir(args)
     elif cmd == "/comparar":
         return _cmd_comparar()
     elif cmd == "/pendientes":
@@ -475,6 +519,10 @@ def procesar_comando(texto: str) -> str:
             "/cerrar PAR RESULTADO_PCT\n"
             "  Anotá el resultado final cuando cerrás el bot en Pionex.\n"
             "  Ej: /cerrar ALGO -11.95\n\n"
+            "/corregir PAR RESULTADO_PCT [abierta|cerrada] [capital] [bu_order_id]\n"
+            "  🩹 Arregla una señal con datos falsos (ej: el bot la marcó\n"
+            "  cerrada por error, pero en Pionex sigue abierta).\n"
+            "  Ej: /corregir MOVE -24.8 abierta 81.48\n\n"
             "/comparar\n"
             "  Ve cómo le fue al cálculo del bot vs. el preset Balanceada.\n\n"
             "/pendientes\n"
