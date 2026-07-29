@@ -426,18 +426,32 @@ def cerrar_grilla_futuros(bu_order_id: str, nota: str = "Cierre automático") ->
     return resp.json()
 
 
-def calcular_resultado_actual(bu_order_id: str):
+def calcular_resultado_actual(bu_order_id: str, capital_total_real: float = None):
     """
     Calcula el % de resultado REAL en este momento para una operación
     todavía ABIERTA (misma fórmula confirmada con datos reales: 12/07):
-    Ganancia% = (marginBalance - initUsdtInvestment) / quoteInvestment * 100.
-    Se usa para decidir si cerrar a las 10hs (solo si ya cubre costos).
+    Ganancia% = (marginBalance - init_investment) / quoteInvestment * 100.
+    Ahora solo INFORMATIVO — ya no dispara ningún cierre automático (ver
+    gestion_riesgo.py, decisión 28/07: solo se cierra al 1.35% real de TP).
+
+    FIX CRÍTICO 28/07: initUsdtInvestment es un campo que Pionex graba UNA
+    VEZ al crear la operación y NUNCA actualiza si agregás capital manual
+    después (caso real: MOVE, 27/07 — se agregó capital, initUsdtInvestment
+    quedó congelado en 60, y la fórmula contó TODO el capital agregado como
+    si fuera ganancia: dio +45.18% cuando el resultado real rondaba -3%).
+    Ahora, si se pasa capital_total_real (el capital_asignado que tenemos
+    en NUESTRA base, que sí se actualiza con /corregir), se usa ESE en vez
+    del initUsdtInvestment de Pionex — evita el mismo bug en cualquier
+    operación editada manualmente.
     """
     data = consultar_orden(bu_order_id).get("data", {}) or {}
     bod = data.get("buOrderData", {}) or {}
     try:
         margin_balance = float(bod.get("marginBalance", 0) or 0)
-        init_investment = float(bod.get("initUsdtInvestment", 0) or 0)
+        if capital_total_real is not None:
+            init_investment = float(capital_total_real)
+        else:
+            init_investment = float(bod.get("initUsdtInvestment", 0) or 0)
         quote_investment = float(bod.get("quoteInvestment") or bod.get("initQuoteInvestment") or 0)
         if quote_investment <= 0:
             return None

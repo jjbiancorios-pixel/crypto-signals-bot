@@ -37,6 +37,8 @@ def _migrar_columnas_riesgo(cur):
         ("zona_riesgo", "TEXT DEFAULT 'verde'"),
         ("capital_apartado", "REAL DEFAULT 0"),
         ("razones", "TEXT"),  # detalle completo de indicadores confirmados, para análisis de patrones
+        ("cierre_pendiente_desde", "TEXT"),  # 28/07: debounce de falsos cierres (ver monitorear_zonas_riesgo)
+        ("aviso_10hs_enviado", "INTEGER DEFAULT 0"),  # 28/07: para no repetir el aviso informativo de 10hs en cada ciclo
     ]
     for nombre, tipo in columnas_nuevas:
         try:
@@ -720,6 +722,42 @@ def operaciones_abiertas_con_bu_order() -> list:
     return rows
 
 
+def marcar_cierre_pendiente(senal_id: int):
+    """
+    28/07 — FIX: Pionex puede devolver un status "cerrado-like" de forma
+    TRANSITORIA durante una edición manual de la grilla (caso real: MOVE,
+    27/07 — el bu_order_id nunca cambió y sigue 'running', pero el bot
+    tomó una lectura momentánea como cierre definitivo). Ahora, la primera
+    vez que se detecta un posible cierre, se marca "pendiente" en vez de
+    cerrarla al toque — recién se confirma si el PRÓXIMO chequeo también
+    da cerrado (ver monitorear_zonas_riesgo en gestion_riesgo.py).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET cierre_pendiente_desde = ? WHERE id = ?",
+                (datetime.now(TZ_ARG).isoformat(), senal_id))
+    conn.commit()
+    conn.close()
+
+
+def limpiar_cierre_pendiente(senal_id: int):
+    """Descarta una falsa alarma de cierre (el chequeo siguiente dio que sigue abierta)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET cierre_pendiente_desde = NULL WHERE id = ?", (senal_id,))
+    conn.commit()
+    conn.close()
+
+
+def marcar_aviso_10hs_enviado(senal_id: int):
+    """28/07: evita repetir el aviso informativo de 10hs en cada ciclo de monitoreo."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET aviso_10hs_enviado = 1 WHERE id = ?", (senal_id,))
+    conn.commit()
+    conn.close()
+
+
 def cerrar_senal_automatica(senal_id: int, resultado_pct: float):
     """
     Marca una señal como cerrada cuando la automatización DETECTA (vía API)
@@ -745,7 +783,7 @@ def cerrar_senal_automatica(senal_id: int, resultado_pct: float):
         except Exception:
             pass
     cur.execute("""
-        UPDATE senales SET cerrado = 1, resultado_pct = ?, tiempo_real_min = ?, hora_cierre = ?
+        UPDATE senales SET cerrado = 1, resultado_pct = ?, tiempo_real_min = ?, hora_cierre = ?, cierre_pendiente_desde = NULL
         WHERE id = ?
     """, (resultado_pct, tiempo_real_min, datetime.now(TZ_ARG).strftime("%H:%M"), senal_id))
     conn.commit()

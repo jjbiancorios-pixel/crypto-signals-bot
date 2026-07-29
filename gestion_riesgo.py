@@ -22,7 +22,7 @@ OBJETIVO_DIARIO_PCT = 3
 
 # Umbral de intervención por duración (cierre a las 10hs si cubre costos)
 HORAS_CIERRE_AUTOMATICO = 10
-RESULTADO_MINIMO_CIERRE_10HS = 0.2  # % — cubre costos/fees, no 0% exacto
+RESULTADO_MINIMO_CIERRE_10HS = 0.2  # % — YA NO se usa para cerrar (28/07: PASO 2 pasó a ser solo informativo). Queda de referencia histórica.
 
 # Margen de origen: colchón reservado desde la apertura de cada grilla
 # (además del monitoreo reactivo cada 30 min). Decisión confirmada por
@@ -130,11 +130,22 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
             continue
 
         if estado_cierre.get("cerrada"):
+            # FIX 28/07: no confiar en una sola lectura — Pionex puede
+            # mostrar un status "cerrado-like" transitorio durante una
+            # edición manual de la grilla (caso real: MOVE, 27/07 — el
+            # bu_order_id nunca cambió y seguía 'running', el bot tomó una
+            # foto momentánea como cierre definitivo). Se exige confirmar
+            # en el chequeo SIGUIENTE antes de dar el cierre por real.
+            if not op.get("cierre_pendiente_desde"):
+                db.marcar_cierre_pendiente(senal_id)
+                acciones.append(f"🔎 {par}: posible cierre detectado, confirmando en el próximo chequeo...")
+                continue
+
             resultado_pct = estado_cierre.get("resultado_pct")
             if resultado_pct is not None:
                 db.cerrar_senal_automatica(senal_id, resultado_pct)
                 emoji = "✅" if resultado_pct >= 0 else "🔴"
-                acciones.append(f"{emoji} {par}: cerrada en Pionex ({resultado_pct:+.2f}% real), capital liberado.")
+                acciones.append(f"{emoji} {par}: cerrada en Pionex ({resultado_pct:+.2f}% real, confirmado), capital liberado.")
             else:
                 # Cerró pero no pudimos calcular el resultado exacto (faltan
                 # datos de marginBalance/investment en la respuesta). Se
@@ -142,36 +153,39 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
                 # con resultado 0% hasta que se confirme manual con /cerrar.
                 db.cerrar_senal_automatica(senal_id, 0.0)
                 acciones.append(
-                    f"⚠️ {par}: cerrada en Pionex (motivo: {estado_cierre.get('motivo')}), "
+                    f"⚠️ {par}: cerrada en Pionex (motivo: {estado_cierre.get('motivo')}, confirmado), "
                     f"capital liberado, pero VERIFICÁ el resultado real y corregilo con /cerrar."
                 )
             continue
+        elif op.get("cierre_pendiente_desde"):
+            # Estaba pendiente de confirmar, pero este chequeo dio que
+            # SIGUE corriendo -> falsa alarma, se descarta sin tocar nada.
+            db.limpiar_cierre_pendiente(senal_id)
+            acciones.append(f"↩️ {par}: falsa alarma de cierre descartada (sigue corriendo en Pionex).")
 
-        # PASO 2: ¿ya pasó el umbral de horas sin cerrar? Si cubre costos
-        # (resultado real ≥ +0.2%), cerrarla ahora para no dejarla llegar
-        # a la "zona crítica" de 12-24hs (dato histórico: 75% win rate y
-        # -22.64% promedio ahí, vs 100%/+1.7% en 0-12hs). Si sigue por
-        # debajo del umbral, NO se toca — se mantiene la regla de nunca
-        # cerrar en pérdida nominal.
+        # PASO 2 (28/07: CAMBIADO a solo informativo, ya NO cierra nada —
+        # decisión confirmada: el único cierre real sigue siendo el TP de
+        # 1.35% que Pionex ejecuta solo). Antes acá se cerraba
+        # automáticamente a las 10hs si superaba +0.2% — se sacó esa acción
+        # por pedido de Juanjo. Se avisa UNA sola vez por operación (no en
+        # cada chequeo) para no spamear Telegram.
         try:
             apertura = datetime.strptime(f"{op['fecha']} {op['hora_alerta']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
             horas_abierta = (datetime.now(TZ_ARG) - apertura).total_seconds() / 3600
         except Exception:
             horas_abierta = None
 
-        if horas_abierta is not None and horas_abierta >= HORAS_CIERRE_AUTOMATICO:
-            resultado_actual = pionex_api.calcular_resultado_actual(bu_order_id)
-            if resultado_actual is not None and resultado_actual >= RESULTADO_MINIMO_CIERRE_10HS:
-                try:
-                    pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"Cierre automático {HORAS_CIERRE_AUTOMATICO}hs")
-                    db.cerrar_senal_automatica(senal_id, resultado_actual)
-                    acciones.append(
-                        f"⏱️ {par}: cerrada a las {horas_abierta:.1f}hs con {resultado_actual:+.2f}% "
-                        f"(umbral {RESULTADO_MINIMO_CIERRE_10HS}%), capital liberado."
-                    )
-                    continue
-                except Exception as e:
-                    acciones.append(f"⚠️ {par}: pasó las {HORAS_CIERRE_AUTOMATICO}hs pero falló el cierre automático ({e})")
+        if horas_abierta is not None and horas_abierta >= HORAS_CIERRE_AUTOMATICO and not op.get("aviso_10hs_enviado"):
+            capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
+            resultado_actual = pionex_api.calcular_resultado_actual(bu_order_id, capital_total_real=capital_real_op)
+            db.marcar_aviso_10hs_enviado(senal_id)
+            if resultado_actual is not None:
+                acciones.append(
+                    f"⏱️ {par}: lleva {horas_abierta:.1f}hs abierta, resultado actual {resultado_actual:+.2f}% "
+                    f"(solo informativo, no se cierra automático)."
+                )
+            else:
+                acciones.append(f"⏱️ {par}: lleva {horas_abierta:.1f}hs abierta (no se pudo calcular el % actual).")
 
         try:
             resultado = pionex_api.calcular_zona_riesgo_combinada(
