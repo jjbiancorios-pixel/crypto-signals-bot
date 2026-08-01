@@ -44,6 +44,8 @@ def _migrar_columnas_riesgo(cur):
         ("peor_resultado_pct", "REAL"),  # 28/07 (modo sombra): peor % alcanzado durante la vida de la operación — MAE real, mismas unidades que STOP_LOSS_PCT
         ("rejilla_pct", "REAL"),  # 29/07: última lectura de ganancia por oscilación de grid (Pionex "Ganancia de rejilla")
         ("tendencia_pct", "REAL"),  # 29/07: última lectura de ganancia por movimiento direccional (Pionex "PnL tend.")
+        ("mejor_resultado_pct", "REAL"),  # 29/07 (modo sombra): mejor % alcanzado durante la vida de la operación — MFE (Maximum Favorable Excursion), complemento del MAE
+        ("motivo_cierre", "TEXT"),  # 29/07: 'tp' / 'stop_loss' / lo que devuelva Pionex / 'desconocido' — para separar cierres por TP real de otros tipos
     ]
     for nombre, tipo in columnas_nuevas:
         try:
@@ -362,6 +364,30 @@ def actualizar_desglose_resultado(senal_id: int, rejilla_pct: float, tendencia_p
     conn.close()
 
 
+def actualizar_mejor_resultado(senal_id: int, resultado_actual: float):
+    """
+    29/07 (modo sombra) — Registra el MEJOR % alcanzado durante la vida de
+    la operación (MFE, Maximum Favorable Excursion) — complemento del MAE.
+    Sirve para ver si el TP de 1.35% está "dejando plata en la mesa" (la
+    operación llegó mucho más alto y después bajó) o si, al revés, muchas
+    veces el precio se acerca al TP (ej. tu observación de 1.13%) y
+    revierte a pérdida ANTES de tocarlo — el dato clave para decidir si
+    conviene ajustar el TP. Reusa resultado_actual, no pide nada nuevo.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE senales
+        SET mejor_resultado_pct = CASE
+            WHEN mejor_resultado_pct IS NULL OR ? > mejor_resultado_pct THEN ?
+            ELSE mejor_resultado_pct
+        END
+        WHERE id = ?
+    """, (resultado_actual, resultado_actual, senal_id))
+    conn.commit()
+    conn.close()
+
+
 def actualizar_peor_resultado(senal_id: int, resultado_actual: float):
     """
     28/07 (modo sombra) — Registra el PEOR % alcanzado durante la vida de
@@ -383,6 +409,86 @@ def actualizar_peor_resultado(senal_id: int, resultado_actual: float):
     """, (resultado_actual, resultado_actual, senal_id))
     conn.commit()
     conn.close()
+
+
+def resumen_mfe(desde_fecha: str = None) -> dict:
+    """
+    29/07 — Informe de MFE real: de las operaciones cerradas con
+    mejor_resultado_pct registrado, calcula la "eficiencia de captura"
+    (resultado final / MFE) — si da bajo (ej. <50%), significa que el
+    precio llegaba mucho más alto/lejos del TP y el resultado final se
+    quedó corto, señal de que el TP podría estar mal calibrado. También
+    separa cuántas operaciones llegaron cerca del TP (>=1.0%) y terminaron
+    revirtiendo a pérdida — el patrón que Juanjo observó (pico ~1.13%).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT resultado_pct, mejor_resultado_pct FROM senales WHERE cerrado = 1 AND mejor_resultado_pct IS NOT NULL"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    con_mfe_positivo = [f for f in filas if f["mejor_resultado_pct"] and f["mejor_resultado_pct"] > 0]
+    eficiencias = []
+    for f in con_mfe_positivo:
+        if f["resultado_pct"] is not None:
+            eficiencias.append(f["resultado_pct"] / f["mejor_resultado_pct"])
+
+    casi_tp_pero_perdio = [
+        f for f in filas
+        if f["mejor_resultado_pct"] is not None and f["mejor_resultado_pct"] >= 1.0
+        and f["resultado_pct"] is not None and f["resultado_pct"] <= 0
+    ]
+
+    return {
+        "total_con_dato": len(filas),
+        "eficiencia_captura_promedio": round(sum(eficiencias) / len(eficiencias), 3) if eficiencias else None,
+        "n_casi_tp_pero_termino_perdiendo": len(casi_tp_pero_perdio),
+        "confiable": len(filas) >= 30,
+    }
+
+
+def resumen_por_motivo_cierre(desde_fecha: str = None) -> dict:
+    """
+    29/07 — Agrupa las operaciones cerradas por motivo_cierre ('tp',
+    'stop_loss', otros) con su tiempo promedio y resultado promedio — para
+    el análisis de "tiempo de llegada a TP" real, separado de otros tipos
+    de cierre.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT motivo_cierre, resultado_pct, tiempo_real_min, par FROM senales WHERE cerrado = 1"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    por_motivo = {}
+    for f in filas:
+        m = f["motivo_cierre"] or "desconocido"
+        por_motivo.setdefault(m, []).append(f)
+
+    resumen = {}
+    for motivo, lst in por_motivo.items():
+        tiempos = [f["tiempo_real_min"] for f in lst if f["tiempo_real_min"] is not None]
+        resultados = [f["resultado_pct"] for f in lst if f["resultado_pct"] is not None]
+        resumen[motivo] = {
+            "n": len(lst),
+            "tiempo_prom_min": round(sum(tiempos) / len(tiempos), 1) if tiempos else None,
+            "resultado_prom_pct": round(sum(resultados) / len(resultados), 3) if resultados else None,
+        }
+    return resumen
 
 
 def resumen_mae(desde_fecha: str = None) -> dict:
@@ -922,7 +1028,7 @@ def operaciones_abiertas_con_bu_order() -> list:
     return rows
 
 
-def cerrar_senal_automatica(senal_id: int, resultado_pct: float):
+def cerrar_senal_automatica(senal_id: int, resultado_pct: float, motivo: str = None):
     """
     Marca una señal como cerrada cuando la automatización DETECTA (vía API)
     que Pionex ya cerró la grilla — libera el capital comprometido para que
@@ -934,6 +1040,10 @@ def cerrar_senal_automatica(senal_id: int, resultado_pct: float):
     (a diferencia de cerrar_senal, la función del /cerrar manual) — se
     perdía el dato de duración real para TODOS los cierres automáticos,
     justo lo que se usa para medir velocidad de rotación.
+
+    29/07: agregado motivo ('tp' / 'stop_loss' / lo que reporte Pionex /
+    'desconocido') — para poder separar tiempo-hasta-TP real de otros
+    tipos de cierre en el análisis de selección entre señales simultáneas.
     """
     conn = _conn()
     cur = conn.cursor()
@@ -947,9 +1057,10 @@ def cerrar_senal_automatica(senal_id: int, resultado_pct: float):
         except Exception:
             pass
     cur.execute("""
-        UPDATE senales SET cerrado = 1, resultado_pct = ?, tiempo_real_min = ?, hora_cierre = ?, cierre_pendiente_desde = NULL
+        UPDATE senales SET cerrado = 1, resultado_pct = ?, tiempo_real_min = ?, hora_cierre = ?,
+                            cierre_pendiente_desde = NULL, motivo_cierre = ?
         WHERE id = ?
-    """, (resultado_pct, tiempo_real_min, datetime.now(TZ_ARG).strftime("%H:%M"), senal_id))
+    """, (resultado_pct, tiempo_real_min, datetime.now(TZ_ARG).strftime("%H:%M"), motivo, senal_id))
     conn.commit()
     conn.close()
 

@@ -202,7 +202,11 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
 
             resultado_pct = estado_cierre.get("resultado_pct")
             if resultado_pct is not None:
-                db.cerrar_senal_automatica(senal_id, resultado_pct)
+                # 29/07: Pionex casi nunca reporta reasonBy, así que se
+                # infiere el motivo por el resultado — >=1.0% es casi
+                # seguro el TP de 1.35% (con margen por fees/slippage).
+                motivo_final = "tp" if resultado_pct >= 1.0 else (estado_cierre.get("motivo") or "desconocido")
+                db.cerrar_senal_automatica(senal_id, resultado_pct, motivo=motivo_final)
                 emoji = "✅" if resultado_pct >= 0 else "🔴"
                 acciones.append(f"{emoji} {par}: cerrada en Pionex ({resultado_pct:+.2f}% real, confirmado), capital liberado.")
             else:
@@ -210,7 +214,7 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
                 # datos de marginBalance/investment en la respuesta). Se
                 # marca cerrada igual para liberar el capital fantasma, pero
                 # con resultado 0% hasta que se confirme manual con /cerrar.
-                db.cerrar_senal_automatica(senal_id, 0.0)
+                db.cerrar_senal_automatica(senal_id, 0.0, motivo=estado_cierre.get("motivo") or "desconocido")
                 acciones.append(
                     f"⚠️ {par}: cerrada en Pionex (motivo: {estado_cierre.get('motivo')}, confirmado), "
                     f"capital liberado, pero VERIFICÁ el resultado real y corregilo con /cerrar."
@@ -260,11 +264,15 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         # propios. No cambia ningún comportamiento, solo guarda el dato.
         if resultado_actual_sl is not None:
             db.actualizar_peor_resultado(senal_id, resultado_actual_sl)
+            # 29/07 (modo sombra) — mismo dato, pero el MEJOR alcanzado
+            # (MFE) — para el análisis de si el TP de 1.35% deja plata
+            # en la mesa, o si el precio se acerca y revierte sin llegar.
+            db.actualizar_mejor_resultado(senal_id, resultado_actual_sl)
 
         if resultado_actual_sl is not None and resultado_actual_sl <= STOP_LOSS_PCT:
             try:
                 pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"Stop-loss automático {STOP_LOSS_PCT}%")
-                db.cerrar_senal_automatica(senal_id, resultado_actual_sl)
+                db.cerrar_senal_automatica(senal_id, resultado_actual_sl, motivo="stop_loss")
                 acciones.append(
                     f"🛑 {par}: STOP-LOSS ejecutado a {resultado_actual_sl:+.2f}% "
                     f"(umbral {STOP_LOSS_PCT}%), capital liberado."

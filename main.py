@@ -729,34 +729,46 @@ def intentar_reapertura(candidato: dict):
         return
 
     if num_reapertura_actual >= 2:
-        print(f"  🔁 {par}: ya alcanzó el máximo de 2 reaperturas, no se reabre.")
+        msg = f"🔁 {par}: no se reabre — ya alcanzó el máximo de 2 reaperturas."
+        print(f"  {msg}")
+        enviar_telegram(msg)
         return
 
     try:
         btc = analizar_btc()
         r = analizar_par(par, btc)
     except Exception as e:
-        print(f"  ⚠️ Reapertura {par}: error al analizar ({e})")
+        msg = f"⚠️ Reapertura {par}: error al analizar ({e})"
+        print(f"  {msg}")
+        enviar_telegram(msg)
         return
 
     if r is None:
-        print(f"  🔁 {par}: no reabre — ya no cumple score≥11 con las condiciones actuales.")
+        msg = f"🔁 {par}: no se reabre — ya no cumple score≥11 con las condiciones actuales."
+        print(f"  {msg}")
+        enviar_telegram(msg)
         return
 
     direccion_original = candidato.get("direccion_original")
     if direccion_original and r["direccion"] != direccion_original:
-        print(f"  🔁 {par}: no reabre — el análisis fresco da {r['direccion']}, distinto a la dirección "
-              f"original ({direccion_original}). Solo se reabre la MISMA dirección.")
+        msg = (f"🔁 {par}: no se reabre — el análisis fresco da {r['direccion']}, distinto a la dirección "
+               f"original ({direccion_original}). Solo se reabre la MISMA dirección.")
+        print(f"  {msg}")
+        enviar_telegram(msg)
         return
 
     es_largo = r["direccion"] == "📈 LARGO"
     if not confirma_regimen_vwap_ema(r["precio"], r["vwap"], r["ema20"], es_largo):
-        print(f"  🔁 {par}: no reabre — no confirma VWAP+EMA de régimen.")
+        msg = f"🔁 {par}: no se reabre — no confirma VWAP+EMA de régimen (score {r['score']}/{r['score_max']} ok, pero régimen no acompaña)."
+        print(f"  {msg}")
+        enviar_telegram(msg)
         return
 
     check = gestion_riesgo.verificar_seguridad_apertura(es_reapertura=True)
     if not check["permitido"]:
-        print(f"  🔁 {par}: no reabre — {check['motivo']}")
+        msg = f"🔁 {par}: no se reabre — {check['motivo']}"
+        print(f"  {msg}")
+        enviar_telegram(msg)
         return
 
     nuevo_num = num_reapertura_actual + 1
