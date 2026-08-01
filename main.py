@@ -1029,7 +1029,7 @@ def main():
         f"🤖 <b>JJ Cripto Bot v16 iniciado</b>\n"
         f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
         f"⏰ 7:00-23:00 ARG | cada 15 min (:03, :18, :33, :48)\n"
-        f"💰 Capital 35%x2 posiciones + 30% reserva | 10x fijo\n"
+        f"💰 Capital 35%x2 posiciones | margen 90/10 | 10x fijo\n"
         f"🛑 Stop-loss {gestion_riesgo.STOP_LOSS_PCT}% | TP fijo 1.35%\n"
         f"📐 Piso de grilla por ADX (6%/7.5%/9%) | Reapertura <5min\n"
         f"🔬 Modo sombra: multi-tf, ADX, volumen, VWAP, CCI, OBV, grid dinámico\n"

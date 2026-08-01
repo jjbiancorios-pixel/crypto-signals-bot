@@ -17,10 +17,14 @@ TZ_ARG = timezone(timedelta(hours=-3))
 CAPITAL_TOTAL_USD = 782  # 28/07: actualizado con el capital real post-pérdidas de v15 confirmado por Juanjo
 
 # ── v16 (27-28/07): cambio de filosofía "diversificado" a "pocas y grandes" ──
-# 35% de capital x 2 posiciones simultáneas + 30% de reserva líquida
-# inmovilizada. El 30% de reserva REEMPLAZA al 15% de la actualización
-# anterior (20-21/07) — no se suman, es la única reserva ahora.
-PCT_OPERATIVO = 0.70  # v16: 2 posiciones x 35% = 70% operativo máximo, 30% reserva
+# 35% de capital x 2 posiciones simultáneas. Reserva del 30% ELIMINADA
+# (01/08, decisión de Juanjo): con el stop-loss real de -20% ya activo,
+# el colchón de reserva pura quedó redundante en el 99.9% de los casos —
+# solo protegía contra un escenario ya cubierto por el stop. El único
+# riesgo residual real (falla técnica: API caída, Railway reiniciado, que
+# impida ejecutar el stop-loss a tiempo) se cubre ahora con el margen de
+# origen más chico (10%, ver RATIO_MARGEN_ORIGEN), no con una reserva aparte.
+PCT_OPERATIVO = 1.0  # v16: sin reserva aparte — el tope real de todos modos lo pone MAX_POSICIONES_SIMULTANEAS x PCT_CAPITAL_POR_OPERACION
 PCT_CAPITAL_POR_OPERACION = 0.35  # v16: 6% -> 35% (pocas y grandes, alta convicción)
 MAX_POSICIONES_SIMULTANEAS = 2  # v16: tope duro nuevo — antes no existía (~14 con el esquema 6%)
 # v16: recalibrado 6 -> 1. El 6 (de la actualización 20-21/07) quedaba
@@ -56,7 +60,7 @@ RESULTADO_MINIMO_CIERRE_10HS = 0.2  # % — YA NO se usa para cerrar (28/07: PAS
 # real: 52.56 inversión + 47.44 margen = ~100 total, no 100+47. Por eso
 # el 9% de capital por operación (ya fijo, no se toca) se divide acá
 # ~50/50, en vez de comprometer 13.5% como en la versión anterior.
-RATIO_MARGEN_ORIGEN = 0.3  # Actualización 20-21/07: 50% -> 30% (70% inversión / 30% margen)
+RATIO_MARGEN_ORIGEN = 0.10  # 01/08: 30% -> 10% (Juanjo: con stop-loss -20% activo, colchón de 30% quedó excesivo — 10% sigue cubriendo el escenario residual de falla técnica, ~9% de movimiento real de precio en 10x)
 
 
 def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
@@ -80,9 +84,9 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
     3. Debe haber capital operativo suficiente (70% del total: 35% x2
        posiciones, 30% restante es reserva líquida inmovilizada).
 
-    El 35% de capital por operación se reparte 70/30 entre inversión real
-    y margen de origen (RATIO_MARGEN_ORIGEN), igual que hace Pionex con
-    el preset "Recomendada".
+    El 35% de capital por operación se reparte 90/10 entre inversión real
+    y margen de origen (RATIO_MARGEN_ORIGEN, bajado de 30% el 01/08 — con
+    el stop-loss real ya activo, un margen tan grande quedó redundante).
     """
     capital_operacion = capital_total * PCT_CAPITAL_POR_OPERACION
     margen_origen = round(capital_operacion * RATIO_MARGEN_ORIGEN, 2)
