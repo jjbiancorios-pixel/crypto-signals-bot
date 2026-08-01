@@ -37,8 +37,11 @@ def _migrar_columnas_riesgo(cur):
         ("zona_riesgo", "TEXT DEFAULT 'verde'"),
         ("capital_apartado", "REAL DEFAULT 0"),
         ("razones", "TEXT"),  # detalle completo de indicadores confirmados, para análisis de patrones
+        ("reabierta_de_id", "INTEGER"),  # v16: id de la señal original si esto es una reapertura (<5min)
+        ("num_reapertura", "INTEGER DEFAULT 0"),  # v16: 0=original, 1=primera reapertura, 2=segunda (máx.)
         ("cierre_pendiente_desde", "TEXT"),  # 28/07: debounce de falsos cierres (ver monitorear_zonas_riesgo)
         ("aviso_10hs_enviado", "INTEGER DEFAULT 0"),  # 28/07: para no repetir el aviso informativo de 10hs en cada ciclo
+        ("peor_resultado_pct", "REAL"),  # 28/07 (modo sombra): peor % alcanzado durante la vida de la operación — MAE real, mismas unidades que STOP_LOSS_PCT
     ]
     for nombre, tipo in columnas_nuevas:
         try:
@@ -134,6 +137,47 @@ def init_db():
         )
     """)
 
+    # v16: log de los 6 filtros en modo sombra (multi-timeframe, ADX, volumen,
+    # VWAP, CCI, OBV) — NO gatean ninguna señal todavía, solo se registra si
+    # cada uno "hubiera aprobado" para poder armar el informe semanal.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS sombra_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            senal_id INTEGER,
+            par TEXT,
+            fecha TEXT NOT NULL,
+            direccion TEXT,
+            multi_tf INTEGER,
+            adx_gate INTEGER,
+            volumen INTEGER,
+            vwap INTEGER,
+            cci INTEGER,
+            obv INTEGER,
+            creado TEXT
+        )
+    """)
+
+    # v16: log del grid dinámico en modo sombra — registra cuándo una
+    # operación abierta se acerca al borde de su rango y "hubiera" disparado
+    # un ajuste vía adjustParams, SIN ejecutarlo todavía. Sirve para medir
+    # con cuánta frecuencia hubiera ayudado, antes de activarlo real.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS grid_dinamico_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            senal_id INTEGER,
+            par TEXT,
+            fecha TEXT NOT NULL,
+            precio_actual REAL,
+            rango_bajo REAL,
+            rango_alto REAL,
+            lado TEXT,
+            distancia_borde_pct REAL,
+            rebote_confirmado INTEGER DEFAULT 0,
+            hubiera_ajustado INTEGER,
+            creado TEXT
+        )
+    """)
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pares_pausados (
             par TEXT PRIMARY KEY,
@@ -185,8 +229,15 @@ def esta_pausado_global() -> bool:
 
 
 # ── Señales (histórico completo) ────────────────────────────
-def guardar_senal(r: dict) -> int:
-    """Guarda una señal recién generada por el bot. Devuelve el id de la fila."""
+def guardar_senal(r: dict, reabierta_de_id: int = None, num_reapertura: int = 0) -> int:
+    """
+    Guarda una señal recién generada por el bot. Devuelve el id de la fila.
+
+    v16: reabierta_de_id / num_reapertura permiten trackear la cadena del
+    sistema de reapertura (<5min) — reabierta_de_id apunta al id de la
+    señal original (o de la reapertura anterior), num_reapertura cuenta
+    0=original, 1=primera reapertura, 2=segunda (máximo confirmado).
+    """
     import json
     conn = _conn()
     cur = conn.cursor()
@@ -196,13 +247,15 @@ def guardar_senal(r: dict) -> int:
         INSERT INTO senales (
             par, fecha, hora_alerta, direccion, score, preset_sugerido,
             precio_entrada, apal_calculado, rango_bajo_calc, rango_alto_calc,
-            rango_pct_calc, grillas_calc, horas_1pct_calc, ganancia_8h_calc, razones
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            rango_pct_calc, grillas_calc, horas_1pct_calc, ganancia_8h_calc, razones,
+            reabierta_de_id, num_reapertura
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         r["par"], ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"),
         r["direccion"], r["score"], r["preset"],
         r["precio"], r["apal"], r["rango_bajo"], r["rango_alto"],
         r["rango_pct"], r["grillas"], r["horas_1pct"], r["ganancia_8h"], razones_json,
+        reabierta_de_id, num_reapertura,
     ))
     conn.commit()
     senal_id = cur.lastrowid
@@ -222,6 +275,141 @@ def ultima_senal_par(par: str):
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def ultima_senal_par_cualquiera(par: str):
+    """
+    28/07 — Igual que ultima_senal_par, pero SIN filtrar por cerrado=0.
+    Para /corregir: casos donde el bot marcó "cerrada" una operación que en
+    realidad Pionex nunca cerró de verdad.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM senales WHERE par = ? ORDER BY id DESC LIMIT 1", (par,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def corregir_senal(senal_id: int, resultado_pct: float, reabrir: bool,
+                    capital_asignado: float = None, bu_order_id: str = None):
+    """
+    28/07 — Corrige una señal que quedó con datos falsos. Si reabrir=True,
+    la vuelve a marcar como abierta (cerrado=0, zona_riesgo='verde',
+    capital_apartado=0, cierre_pendiente_desde=NULL) para que el monitoreo
+    de riesgo la retome.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    if reabrir:
+        cur.execute("""
+            UPDATE senales SET resultado_pct = ?, cerrado = 0, zona_riesgo = 'verde',
+                                capital_apartado = 0, cierre_pendiente_desde = NULL
+            WHERE id = ?
+        """, (resultado_pct, senal_id))
+    else:
+        cur.execute("UPDATE senales SET resultado_pct = ?, cerrado = 1 WHERE id = ?", (resultado_pct, senal_id))
+    if capital_asignado is not None:
+        cur.execute("UPDATE senales SET capital_asignado = ? WHERE id = ?", (capital_asignado, senal_id))
+    if bu_order_id is not None:
+        cur.execute("UPDATE senales SET bu_order_id = ? WHERE id = ?", (bu_order_id, senal_id))
+    conn.commit()
+    conn.close()
+
+
+def marcar_cierre_pendiente(senal_id: int):
+    """
+    28/07 — FIX: Pionex puede devolver un status "cerrado-like" TRANSITORIO
+    durante una edición manual de la grilla (caso real: MOVE, 27/07 — el
+    bu_order_id nunca cambió y seguía 'running'). Primera detección de
+    posible cierre -> se marca pendiente, no se cierra al toque.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET cierre_pendiente_desde = ? WHERE id = ?",
+                (datetime.now(TZ_ARG).isoformat(), senal_id))
+    conn.commit()
+    conn.close()
+
+
+def limpiar_cierre_pendiente(senal_id: int):
+    """Descarta una falsa alarma de cierre (el chequeo siguiente dio que sigue abierta)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET cierre_pendiente_desde = NULL WHERE id = ?", (senal_id,))
+    conn.commit()
+    conn.close()
+
+
+def marcar_aviso_10hs_enviado(senal_id: int):
+    """28/07: evita repetir el aviso informativo de 10hs en cada ciclo de monitoreo."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET aviso_10hs_enviado = 1 WHERE id = ?", (senal_id,))
+    conn.commit()
+    conn.close()
+
+
+def actualizar_peor_resultado(senal_id: int, resultado_actual: float):
+    """
+    28/07 (modo sombra) — Registra el PEOR % alcanzado durante la vida de
+    la operación, en las mismas unidades que STOP_LOSS_PCT (no precio
+    crudo). Es el dato que faltaba para calcular MAE real (Maximum Adverse
+    Excursion, Sweeney) — reusa el resultado_actual que ya se calcula cada
+    ciclo para el chequeo de stop-loss, no pide nada nuevo. NO cambia
+    ningún comportamiento — solo guarda el mínimo histórico observado.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE senales
+        SET peor_resultado_pct = CASE
+            WHEN peor_resultado_pct IS NULL OR ? < peor_resultado_pct THEN ?
+            ELSE peor_resultado_pct
+        END
+        WHERE id = ?
+    """, (resultado_actual, resultado_actual, senal_id))
+    conn.commit()
+    conn.close()
+
+
+def resumen_mae(desde_fecha: str = None) -> dict:
+    """
+    28/07 — Informe de MAE real: de las operaciones YA CERRADAS con
+    peor_resultado_pct registrado, separa ganadoras vs. perdedoras y
+    muestra hasta cuánto cayeron las GANADORAS antes de recuperarse — ese
+    es el dato clave para calibrar el stop-loss con evidencia propia (no
+    con el -20% actual, elegido sin datos de trayectoria). Necesita
+    mínimo ~50 operaciones para ser estadísticamente confiable (Sweeney).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT resultado_pct, peor_resultado_pct FROM senales WHERE cerrado = 1 AND peor_resultado_pct IS NOT NULL"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = cur.fetchall()
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    ganadoras = [dict(f) for f in filas if f["resultado_pct"] is not None and f["resultado_pct"] > 0]
+    perdedoras = [dict(f) for f in filas if f["resultado_pct"] is not None and f["resultado_pct"] <= 0]
+
+    mae_ganadoras = [g["peor_resultado_pct"] for g in ganadoras if g["peor_resultado_pct"] is not None]
+    mae_perdedoras = [p["peor_resultado_pct"] for p in perdedoras if p["peor_resultado_pct"] is not None]
+
+    return {
+        "total_con_dato": len(filas),
+        "n_ganadoras": len(ganadoras),
+        "n_perdedoras": len(perdedoras),
+        "mae_ganadoras_peor": min(mae_ganadoras) if mae_ganadoras else None,
+        "mae_ganadoras_promedio": round(sum(mae_ganadoras) / len(mae_ganadoras), 2) if mae_ganadoras else None,
+        "mae_perdedoras_promedio": round(sum(mae_perdedoras) / len(mae_perdedoras), 2) if mae_perdedoras else None,
+        "confiable": len(filas) >= 50,
+    }
 
 
 def ultima_senal_par_cualquiera(par: str):
@@ -722,42 +910,6 @@ def operaciones_abiertas_con_bu_order() -> list:
     return rows
 
 
-def marcar_cierre_pendiente(senal_id: int):
-    """
-    28/07 — FIX: Pionex puede devolver un status "cerrado-like" de forma
-    TRANSITORIA durante una edición manual de la grilla (caso real: MOVE,
-    27/07 — el bu_order_id nunca cambió y sigue 'running', pero el bot
-    tomó una lectura momentánea como cierre definitivo). Ahora, la primera
-    vez que se detecta un posible cierre, se marca "pendiente" en vez de
-    cerrarla al toque — recién se confirma si el PRÓXIMO chequeo también
-    da cerrado (ver monitorear_zonas_riesgo en gestion_riesgo.py).
-    """
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE senales SET cierre_pendiente_desde = ? WHERE id = ?",
-                (datetime.now(TZ_ARG).isoformat(), senal_id))
-    conn.commit()
-    conn.close()
-
-
-def limpiar_cierre_pendiente(senal_id: int):
-    """Descarta una falsa alarma de cierre (el chequeo siguiente dio que sigue abierta)."""
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE senales SET cierre_pendiente_desde = NULL WHERE id = ?", (senal_id,))
-    conn.commit()
-    conn.close()
-
-
-def marcar_aviso_10hs_enviado(senal_id: int):
-    """28/07: evita repetir el aviso informativo de 10hs en cada ciclo de monitoreo."""
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE senales SET aviso_10hs_enviado = 1 WHERE id = ?", (senal_id,))
-    conn.commit()
-    conn.close()
-
-
 def cerrar_senal_automatica(senal_id: int, resultado_pct: float):
     """
     Marca una señal como cerrada cuando la automatización DETECTA (vía API)
@@ -846,3 +998,160 @@ def ganancia_hoy_pct(capital_total: float) -> float:
     if capital_total <= 0:
         return 0.0
     return round((ganancia_usd / capital_total) * 100, 2)
+
+
+# ── Modo sombra v16 (multi-timeframe, ADX, volumen, VWAP) ───
+def guardar_log_sombra(senal_id: int, par: str, direccion: str,
+                        multi_tf: bool, adx_gate: bool, volumen: bool, vwap: bool,
+                        cci: bool = None, obv: bool = None):
+    """
+    Guarda si cada uno de los filtros en modo sombra HUBIERA aprobado esta
+    señal — no bloquea ni modifica la señal en sí. Se usa para armar el
+    informe semanal (resumen_sombra) y decidir cuáles conviene activar
+    como filtro duro. cci/obv son opcionales (None si no se calcularon).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        INSERT INTO sombra_log (senal_id, par, fecha, direccion, multi_tf, adx_gate, volumen, vwap, cci, obv, creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        senal_id, par, ahora.strftime("%Y%m%d"), direccion,
+        int(multi_tf), int(adx_gate), int(volumen), int(vwap),
+        None if cci is None else int(cci), None if obv is None else int(obv),
+        ahora.isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def extremos_precio_grid_dinamico(senal_id: int):
+    """
+    28/07 — Devuelve (mínimo, máximo) de precio_actual ya logueado para
+    esta operación (histórico acumulado en grid_dinamico_log). Se usa para
+    detectar "rebote confirmado" al estilo DGT (arXiv 2506.11921): no
+    ajustar apenas toca el borde, esperar a que rebote/retroceda un % desde
+    el extremo alcanzado antes de considerar el ajuste.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT MIN(precio_actual), MAX(precio_actual) FROM grid_dinamico_log WHERE senal_id = ?
+    """, (senal_id,))
+    row = cur.fetchone()
+    conn.close()
+    minimo = row[0] if row and row[0] is not None else None
+    maximo = row[1] if row and row[1] is not None else None
+    return minimo, maximo
+
+
+def guardar_log_grid_dinamico(senal_id: int, par: str, precio_actual: float,
+                               rango_bajo: float, rango_alto: float,
+                               lado: str, distancia_borde_pct: float,
+                               rebote_confirmado: bool, hubiera_ajustado: bool):
+    """
+    v16: log en modo sombra del grid dinámico — se llama desde
+    monitorear_zonas_riesgo() reusando el precio ya consultado ahí (no pide
+    uno nuevo). Registra qué tan cerca estuvo el precio del borde del rango,
+    si hubo un REBOTE CONFIRMADO desde el mínimo/máximo histórico (regla
+    real del paper DGT, no solo "cerca del borde"), y si con eso se HUBIERA
+    disparado un ajuste vía adjustParams, sin ejecutarlo.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        INSERT INTO grid_dinamico_log
+            (senal_id, par, fecha, precio_actual, rango_bajo, rango_alto, lado,
+             distancia_borde_pct, rebote_confirmado, hubiera_ajustado, creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        senal_id, par, ahora.strftime("%Y%m%d"), precio_actual, rango_bajo, rango_alto,
+        lado, distancia_borde_pct, int(rebote_confirmado), int(hubiera_ajustado), ahora.isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def resumen_sombra(desde_fecha: str = None) -> dict:
+    """
+    Informe de los filtros en modo sombra: para cada uno, cuántas señales
+    aprobó/rechazó, y de las que ya cerraron (con resultado real), el
+    resultado promedio separado por aprobó=Sí vs aprobó=No. Sirve para
+    decidir con datos reales cuáles conviene activar como filtro duro.
+    Si no se pasa desde_fecha, usa todo el historial disponible.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    if desde_fecha:
+        cur.execute("SELECT * FROM sombra_log WHERE fecha >= ?", (desde_fecha,))
+    else:
+        cur.execute("SELECT * FROM sombra_log")
+    logs = [dict(r) for r in cur.fetchall()]
+
+    if not logs:
+        conn.close()
+        return {"total": 0}
+
+    # Traer resultado real de las señales ya cerradas, para cruzar con el log
+    ids = [l["senal_id"] for l in logs if l["senal_id"] is not None]
+    resultados = {}
+    if ids:
+        placeholders = ",".join("?" * len(ids))
+        cur.execute(f"""
+            SELECT id, resultado_pct, cerrado FROM senales WHERE id IN ({placeholders})
+        """, ids)
+        for row in cur.fetchall():
+            if row["cerrado"] == 1 and row["resultado_pct"] is not None:
+                resultados[row["id"]] = row["resultado_pct"]
+    conn.close()
+
+    def _stat(campo):
+        aprobo = [l for l in logs if l[campo] == 1]
+        rechazo = [l for l in logs if l[campo] == 0]
+        def _prom(lst):
+            vals = [resultados[l["senal_id"]] for l in lst if l["senal_id"] in resultados]
+            return {"n_total": len(lst), "n_con_resultado": len(vals),
+                     "prom": round(sum(vals) / len(vals), 2) if vals else None}
+        return {"aprobo": _prom(aprobo), "rechazo": _prom(rechazo)}
+
+    return {
+        "total": len(logs),
+        "multi_tf": _stat("multi_tf"),
+        "adx_gate": _stat("adx_gate"),
+        "volumen": _stat("volumen"),
+        "vwap": _stat("vwap"),
+        "cci": _stat("cci"),
+        "obv": _stat("obv"),
+    }
+
+
+def resumen_grid_dinamico(desde_fecha: str = None) -> dict:
+    """
+    Informe del grid dinámico en modo sombra: cuántas veces se acercó al
+    borde, cuántas tuvieron REBOTE CONFIRMADO (regla real del DGT) y
+    "hubiera ajustado" con esa confirmación, vs. cuántas hubieran ajustado
+    con el criterio viejo (solo distancia, sin esperar rebote) — para
+    comparar si confirmar el rebote realmente filtra mejor.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    if desde_fecha:
+        cur.execute("SELECT * FROM grid_dinamico_log WHERE fecha >= ?", (desde_fecha,))
+    else:
+        cur.execute("SELECT * FROM grid_dinamico_log")
+    logs = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    if not logs:
+        return {"total": 0}
+    cerca_del_borde = [l for l in logs if l["distancia_borde_pct"] is not None]
+    con_rebote_confirmado = [l for l in logs if l["rebote_confirmado"] == 1]
+    hubiera_ajustado = [l for l in logs if l["hubiera_ajustado"] == 1]
+    return {
+        "total_chequeos": len(logs),
+        "cerca_del_borde_n": len(cerca_del_borde),
+        "rebote_confirmado_n": len(con_rebote_confirmado),
+        "hubiera_ajustado_n": len(hubiera_ajustado),
+        "pares_afectados": sorted(set(l["par"] for l in hubiera_ajustado)),
+    }

@@ -189,10 +189,10 @@ def _precio_binance(par):
 
 def obtener_precio_mercado(par):
     """
-    28/07 (fix crítico): precio de mercado en tiempo real, independiente de
-    main.py (evita import circular) — se usa para el chequeo de zona de
-    riesgo por DISTANCIA a liquidación, complementario al de marginBalance.
-    Prueba 3 exchanges en orden hasta conseguir un precio válido.
+    v16 (28/07): precio de mercado en tiempo real, independiente de main.py
+    (evita import circular) — se usa para el chequeo de zona de riesgo por
+    DISTANCIA a liquidación, complementario al de marginBalance. Prueba 3
+    exchanges en orden hasta conseguir un precio válido.
     """
     for f in (_precio_bybit, _precio_okx, _precio_binance):
         try:
@@ -206,9 +206,9 @@ def obtener_precio_mercado(par):
 def calcular_zona_riesgo_combinada(bu_order_id: str, capital_asignado: float,
                                     ratio_margen_origen: float, par: str) -> dict:
     """
-    FIX CRÍTICO 28/07 — calcular_zona_riesgo_por_margen() sola puede fallar
+    v16 (28/07) — FIX: calcular_zona_riesgo_por_margen() sola puede fallar
     en detectar riesgo real cuando un grid de compra sigue ampliando la
-    posición mientras el precio cae (caso real: ATOM el 27/07 — marginBalance
+    posición mientras el precio cae (ej. real: ATOM el 27/07 — marginBalance
     daba zona VERDE con 89.7% del capital, pero el precio estaba a solo
     2.2% del precio de liquidación real, porque la posición había crecido
     de 137 a 266 unidades comprando en la baja — el apalancamiento efectivo
@@ -257,6 +257,7 @@ def calcular_zona_riesgo_combinada(bu_order_id: str, capital_asignado: float,
         "distancia_pct": r_distancia.get("distancia_pct"),
         "position_open_price": r_margen.get("position_open_price"),
         "margin_balance": r_margen.get("margin_balance"),
+        "precio_actual": precio_actual,  # v16: reusado por el log de grid dinámico, evita pedirlo 2 veces
     }
 
 

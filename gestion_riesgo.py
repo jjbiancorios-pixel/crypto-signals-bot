@@ -14,10 +14,30 @@ from datetime import datetime, timezone, timedelta
 
 TZ_ARG = timezone(timedelta(hours=-3))
 
-CAPITAL_TOTAL_USD = 1000  # TODO: mover a variable de entorno cuando escale
-PCT_OPERATIVO = 0.85  # Actualización 20-21/07: 82% -> 85% (el 15% restante queda de reserva líquida)
-PCT_CAPITAL_POR_OPERACION = 0.06  # Actualización 20-21/07: 9% -> 6% flat
-MAX_ATASCADAS_RIESGO = 6  # Actualización 20-21/07: 3 -> 6
+CAPITAL_TOTAL_USD = 782  # 28/07: actualizado con el capital real post-pérdidas de v15 confirmado por Juanjo
+
+# ── v16 (27-28/07): cambio de filosofía "diversificado" a "pocas y grandes" ──
+# 35% de capital x 2 posiciones simultáneas + 30% de reserva líquida
+# inmovilizada. El 30% de reserva REEMPLAZA al 15% de la actualización
+# anterior (20-21/07) — no se suman, es la única reserva ahora.
+PCT_OPERATIVO = 0.70  # v16: 2 posiciones x 35% = 70% operativo máximo, 30% reserva
+PCT_CAPITAL_POR_OPERACION = 0.35  # v16: 6% -> 35% (pocas y grandes, alta convicción)
+MAX_POSICIONES_SIMULTANEAS = 2  # v16: tope duro nuevo — antes no existía (~14 con el esquema 6%)
+# v16: recalibrado 6 -> 1. El 6 (de la actualización 20-21/07) quedaba
+# matemáticamente imposible de alcanzar con el tope nuevo de 2 posiciones
+# simultáneas (nunca puede haber 6 atascadas si el máximo son 2). Se
+# recalibra manteniendo la misma proporción aproximada del diseño original
+# (6 de ~14 posiciones ≈ 43% -> redondea a 1 de 2).
+MAX_ATASCADAS_RIESGO = 1
+MAX_APERTURAS_POR_CICLO = 1  # v16: nuevo — máx. 1 apertura nueva por ciclo de 15 min
+STOP_LOSS_PCT = -20  # 28/07: NUEVO — cierre real si una operación llega a este % de pérdida sobre su capital
+# asignado, sin importar cuántos días lleve. Calibrado con expectancy real sobre 542 operaciones
+# históricas limpias (98% win rate, +1.66% promedio ganador): -20% da expectancy de +1.25%/operación,
+# vs. dejar correr sin límite (que en 8 casos reales promedió -103%, incluido EGLD -215.68%, SEI -130%,
+# RUNE -75%, MASK -31%). Reemplaza parcialmente "nunca cerrar en pérdida nominal" SOLO para pérdidas que
+# superan este piso. Recalibrar cuando haya datos de MAE real (v16 todavía no los captura).
+UMBRAL_GRID_DINAMICO_PCT = 10  # v16 (modo sombra): distancia al borde del rango que "hubiera" disparado un ajuste
+BETA_REBOTE_DGT_PCT = 0.3  # v16 (modo sombra, 28/07): % de rebote/pullback confirmado que exige el paper DGT antes de ajustar — valor propio, sin dato histórico detrás todavía, a calibrar con el informe semanal
 OBJETIVO_DIARIO_PCT = 3
 
 # Umbral de intervención por duración (cierre a las 10hs si cubre costos)
@@ -39,26 +59,51 @@ RESULTADO_MINIMO_CIERRE_10HS = 0.2  # % — YA NO se usa para cerrar (28/07: PAS
 RATIO_MARGEN_ORIGEN = 0.3  # Actualización 20-21/07: 50% -> 30% (70% inversión / 30% margen)
 
 
-def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
+def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
+                                  aperturas_este_ciclo: int = 0,
+                                  es_reapertura: bool = False) -> dict:
     """
     Corre el checklist completo ANTES de llamar a pionex_api.crear_grilla_futuros().
     Devuelve {"permitido": bool, "motivo": str, "capital_operacion": float,
     "inversion_real": float, "margen_origen": float}.
 
-    Reglas (sección 6 del proyecto, sin reabrir):
-    1. Modo restrictivo: si hay >=3 operaciones en zona amarilla/roja
-       simultáneas, solo se permite abrir si TODAVÍA no se llegó al 3%
-       del capital DISPONIBLE ese día (no del total).
-    2. Debe haber capital operativo suficiente (82% del total, menos lo
-       ya comprometido, menos lo apartado por operaciones en riesgo).
+    Reglas v16 (filosofía "pocas y grandes"):
+    0. Tope duro de posiciones simultáneas (MAX_POSICIONES_SIMULTANEAS=2).
+    1. Máx. 1 apertura nueva por ciclo de 15 min (MAX_APERTURAS_POR_CICLO),
+       salvo que sea una reapertura del sistema <5min (es_reapertura=True),
+       que tiene su propia vara más exigente (VWAP+EMA de régimen) y no
+       compite por este cupo — ver telegram/main para el detalle.
+    2. Modo restrictivo: si hay >=1 operación en zona amarilla/roja
+       (MAX_ATASCADAS_RIESGO=1, recalibrado para el tope de 2 posiciones),
+       solo se permite abrir si TODAVÍA no se llegó al 3% del capital
+       DISPONIBLE ese día (no del total).
+    3. Debe haber capital operativo suficiente (70% del total: 35% x2
+       posiciones, 30% restante es reserva líquida inmovilizada).
 
-    El 9% de capital por operación SIGUE SIENDO 9% en total (no sube a
-    13.5%) — internamente se reparte entre inversión real y margen de
-    origen, igual que hace Pionex con el preset "Recomendada".
+    El 35% de capital por operación se reparte 70/30 entre inversión real
+    y margen de origen (RATIO_MARGEN_ORIGEN), igual que hace Pionex con
+    el preset "Recomendada".
     """
     capital_operacion = capital_total * PCT_CAPITAL_POR_OPERACION
     margen_origen = round(capital_operacion * RATIO_MARGEN_ORIGEN, 2)
     inversion_real = round(capital_operacion - margen_origen, 2)
+
+    posiciones_abiertas = len(db.operaciones_abiertas_con_bu_order())
+    if posiciones_abiertas >= MAX_POSICIONES_SIMULTANEAS:
+        return {
+            "permitido": False,
+            "motivo": f"Tope de posiciones simultáneas alcanzado "
+                      f"({posiciones_abiertas}/{MAX_POSICIONES_SIMULTANEAS}).",
+            "capital_operacion": capital_operacion,
+        }
+
+    if not es_reapertura and aperturas_este_ciclo >= MAX_APERTURAS_POR_CICLO:
+        return {
+            "permitido": False,
+            "motivo": f"Ya se abrió {aperturas_este_ciclo} posición nueva en este ciclo "
+                      f"(máx. {MAX_APERTURAS_POR_CICLO}/ciclo).",
+            "capital_operacion": capital_operacion,
+        }
 
     atascadas = db.contar_atascadas_riesgo()
     comprometido = db.capital_comprometido_total()
@@ -103,16 +148,22 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD) -> di
     }
 
 
-def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
+def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
     """
     Recorre las operaciones abiertas con bu_order_id, consulta su zona de
     riesgo real en Pionex, actualiza la DB, y si cae a zona roja llama a
     reforzar_margen() usando el 5% ya apartado. Pensada para correr en el
     mismo ciclo de 30 min que el análisis técnico.
 
-    Devuelve un log de acciones tomadas, para avisar por Telegram.
+    v16: además detecta cierres en MENOS DE 5 MINUTOS desde la apertura, y
+    los devuelve en "candidatos_reapertura" para que main.py dispare el
+    análisis de reapertura de esa moneda puntual (esta función no puede
+    llamar a main.analizar_par directamente sin crear un import circular).
+
+    Devuelve {"acciones": [...], "candidatos_reapertura": [...]}.
     """
     acciones = []
+    candidatos_reapertura = []
     abiertas = db.operaciones_abiertas_con_bu_order()
 
     for op in abiertas:
@@ -120,6 +171,12 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
         senal_id = op["id"]
         par = op["par"]
         precio_entrada = op["precio_entrada"]
+
+        try:
+            apertura = datetime.strptime(f"{op['fecha']} {op['hora_alerta']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
+            minutos_abierta = (datetime.now(TZ_ARG) - apertura).total_seconds() / 60
+        except Exception:
+            minutos_abierta = None
 
         # PASO 1: ¿ya cerró en Pionex? Si sí, liberar capital y no seguir
         # chequeando zona de riesgo sobre una operación que ya no existe.
@@ -135,7 +192,9 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
             # edición manual de la grilla (caso real: MOVE, 27/07 — el
             # bu_order_id nunca cambió y seguía 'running', el bot tomó una
             # foto momentánea como cierre definitivo). Se exige confirmar
-            # en el chequeo SIGUIENTE antes de dar el cierre por real.
+            # en el chequeo SIGUIENTE antes de dar el cierre por real (y
+            # antes de evaluar la reapertura, que solo debe dispararse
+            # sobre un cierre YA confirmado).
             if not op.get("cierre_pendiente_desde"):
                 db.marcar_cierre_pendiente(senal_id)
                 acciones.append(f"🔎 {par}: posible cierre detectado, confirmando en el próximo chequeo...")
@@ -156,6 +215,20 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
                     f"⚠️ {par}: cerrada en Pionex (motivo: {estado_cierre.get('motivo')}, confirmado), "
                     f"capital liberado, pero VERIFICÁ el resultado real y corregilo con /cerrar."
                 )
+
+            # v16: sistema de reapertura — solo si cerró en <5min y todavía
+            # no se alcanzó el máximo de 2 reaperturas para esta cadena.
+            # (minutos_abierta se calculó al detectar por primera vez el
+            # posible cierre, en el chequeo anterior — sigue siendo válido)
+            num_reapertura_actual = op.get("num_reapertura") or 0
+            if minutos_abierta is not None and minutos_abierta < 5 and num_reapertura_actual < 2:
+                acciones.append(f"🔁 {par}: cerró en {minutos_abierta:.1f} min — evaluando reapertura...")
+                candidatos_reapertura.append({
+                    "par": par,
+                    "senal_id_original": senal_id,
+                    "num_reapertura_actual": num_reapertura_actual,
+                    "direccion_original": op.get("direccion"),
+                })
             continue
         elif op.get("cierre_pendiente_desde"):
             # Estaba pendiente de confirmar, pero este chequeo dio que
@@ -163,17 +236,46 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
             db.limpiar_cierre_pendiente(senal_id)
             acciones.append(f"↩️ {par}: falsa alarma de cierre descartada (sigue corriendo en Pionex).")
 
+        # PASO 1.5 (28/07, NUEVO) — stop-loss real por % de pérdida. Corre
+        # TODOS los ciclos (no depende de cuántas horas/días lleve abierta),
+        # a diferencia del aviso de 10hs de abajo. Es un cierre REAL
+        # (cerrar_grilla_futuros), no solo informativo — decisión de Juanjo
+        # tras el caso real de EGLD (-215.68%, cerró en solo 6hs, algo que
+        # ninguna regla basada en tiempo hubiera prevenido).
+        capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
+        try:
+            resultado_actual_sl = pionex_api.calcular_resultado_actual(bu_order_id, capital_total_real=capital_real_op)
+        except Exception:
+            resultado_actual_sl = None
+
+        # 28/07 (modo sombra) — registrar el peor resultado alcanzado hasta
+        # ahora, para poder calcular MAE real más adelante con datos
+        # propios. No cambia ningún comportamiento, solo guarda el dato.
+        if resultado_actual_sl is not None:
+            db.actualizar_peor_resultado(senal_id, resultado_actual_sl)
+
+        if resultado_actual_sl is not None and resultado_actual_sl <= STOP_LOSS_PCT:
+            try:
+                pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"Stop-loss automático {STOP_LOSS_PCT}%")
+                db.cerrar_senal_automatica(senal_id, resultado_actual_sl)
+                acciones.append(
+                    f"🛑 {par}: STOP-LOSS ejecutado a {resultado_actual_sl:+.2f}% "
+                    f"(umbral {STOP_LOSS_PCT}%), capital liberado."
+                )
+                continue
+            except Exception as e:
+                acciones.append(
+                    f"⚠️ {par}: tocó el stop-loss ({resultado_actual_sl:+.2f}%) pero falló el cierre real ({e}) — REVISAR YA."
+                )
+
         # PASO 2 (28/07: CAMBIADO a solo informativo, ya NO cierra nada —
         # decisión confirmada: el único cierre real sigue siendo el TP de
         # 1.35% que Pionex ejecuta solo). Antes acá se cerraba
         # automáticamente a las 10hs si superaba +0.2% — se sacó esa acción
         # por pedido de Juanjo. Se avisa UNA sola vez por operación (no en
-        # cada chequeo) para no spamear Telegram.
-        try:
-            apertura = datetime.strptime(f"{op['fecha']} {op['hora_alerta']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
-            horas_abierta = (datetime.now(TZ_ARG) - apertura).total_seconds() / 3600
-        except Exception:
-            horas_abierta = None
+        # cada chequeo, y en v16 el chequeo corre cada 1 min) para no
+        # spamear Telegram.
+        horas_abierta = minutos_abierta / 60 if minutos_abierta is not None else None
 
         if horas_abierta is not None and horas_abierta >= HORAS_CIERRE_AUTOMATICO and not op.get("aviso_10hs_enviado"):
             capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
@@ -198,6 +300,38 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
 
         zona = resultado.get("zona", "desconocida")
         zona_anterior = op.get("zona_riesgo", "verde")
+
+        # v16: log en modo sombra del grid dinámico — reusa el precio_actual
+        # ya consultado arriba (para la zona combinada), no pide uno nuevo.
+        # 28/07: actualizado a la regla REAL del paper DGT (arXiv 2506.11921)
+        # — no basta con estar cerca del borde, hace falta un REBOTE
+        # CONFIRMADO (beta%) desde el mínimo/máximo ya alcanzado, recién ahí
+        # "hubiera ajustado". Antes era un placeholder de solo distancia.
+        precio_actual = resultado.get("precio_actual")
+        rango_bajo_op = op.get("rango_bajo_calc")
+        rango_alto_op = op.get("rango_alto_calc")
+        if precio_actual and rango_bajo_op and rango_alto_op and precio_actual > 0:
+            dist_top_pct = (rango_alto_op - precio_actual) / precio_actual * 100
+            dist_bottom_pct = (precio_actual - rango_bajo_op) / precio_actual * 100
+            if dist_top_pct <= dist_bottom_pct:
+                lado, distancia_borde_pct = "top", dist_top_pct
+            else:
+                lado, distancia_borde_pct = "bottom", dist_bottom_pct
+
+            minimo_hist, maximo_hist = db.extremos_precio_grid_dinamico(senal_id)
+            rebote_confirmado = False
+            if lado == "bottom" and minimo_hist and minimo_hist > 0:
+                rebote_pct = (precio_actual - minimo_hist) / minimo_hist * 100
+                rebote_confirmado = rebote_pct >= BETA_REBOTE_DGT_PCT
+            elif lado == "top" and maximo_hist and maximo_hist > 0:
+                pullback_pct = (maximo_hist - precio_actual) / maximo_hist * 100
+                rebote_confirmado = pullback_pct >= BETA_REBOTE_DGT_PCT
+
+            hubiera_ajustado = distancia_borde_pct <= UMBRAL_GRID_DINAMICO_PCT and rebote_confirmado
+            db.guardar_log_grid_dinamico(
+                senal_id, par, precio_actual, rango_bajo_op, rango_alto_op,
+                lado, round(distancia_borde_pct, 2), rebote_confirmado, hubiera_ajustado
+            )
 
         # Monto de refuerzo: igual al margen de origen que YA tiene esta
         # operación puntual (decisión confirmada) — no un % fijo del
@@ -238,4 +372,4 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> list:
                 except Exception as e:
                     acciones.append(f"⚠️ {par}: zona roja pero falló refuerzo de margen ({e})")
 
-    return acciones
+    return {"acciones": acciones, "candidatos_reapertura": candidatos_reapertura}

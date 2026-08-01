@@ -208,6 +208,97 @@ def calc_macd(s):
 
 def calc_ema(s, p): return float(s.ewm(span=p).mean().iloc[-1])
 
+def calc_adx(df, p=14):
+    """
+    ADX (Average Directional Index) + DI+/DI- — método de Wilder.
+    Mide FUERZA de tendencia (0-100), sin importar dirección:
+      < 25: sin tendencia clara / lateral (bueno para grid — oscilación)
+      25-35: tendencia moderada
+      > 35: tendencia fuerte/sostenida (riesgo de romper el rango del grid)
+    DI+ > DI-: la fuerza direccional es alcista; DI- > DI+: bajista.
+    v16: usado para diferenciar el piso de ancho de grilla (ver calcular_grid)
+    y en modo sombra para loggear si confirma la dirección de cada señal.
+    """
+    high, low, close = df["high"], df["low"], df["close"]
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
+    atr_w = tr.ewm(alpha=1/p, adjust=False).mean()
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1/p, adjust=False).mean() / atr_w.replace(0, np.nan)
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1/p, adjust=False).mean() / atr_w.replace(0, np.nan)
+    dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan) * 100
+    adx = dx.ewm(alpha=1/p, adjust=False).mean()
+    return {
+        "adx": float(adx.iloc[-1]) if pd.notna(adx.iloc[-1]) else 0.0,
+        "plus_di": float(plus_di.iloc[-1]) if pd.notna(plus_di.iloc[-1]) else 0.0,
+        "minus_di": float(minus_di.iloc[-1]) if pd.notna(minus_di.iloc[-1]) else 0.0,
+    }
+
+def calc_vwap(df, p=96):
+    """
+    VWAP (Volume Weighted Average Price) sobre las últimas p velas (96 de
+    15min ≈ 24hs). Precio típico (H+L+C)/3 ponderado por volumen.
+    v16: usado como "régimen" — precio arriba del VWAP = sesgo alcista,
+    abajo = sesgo bajista. Se usa en modo sombra y en el sistema de
+    reapertura (<5min), combinado con EMA20 (ver confirma_regimen_vwap_ema).
+    """
+    d = df.iloc[-p:] if len(df) >= p else df
+    tp = (d["high"] + d["low"] + d["close"]) / 3
+    vol_total = d["vol"].sum()
+    if vol_total <= 0:
+        return float(d["close"].iloc[-1])
+    return float((tp * d["vol"]).sum() / vol_total)
+
+def calc_cci(df, p=20):
+    """
+    CCI (Commodity Channel Index) — mide desviación del precio típico
+    respecto a su promedio móvil. >+100 = sobrecompra/tendencia fuerte
+    alcista, <-100 = sobreventa/tendencia fuerte bajista.
+    v16: candidato en modo sombra frente a RSI — un paper (arXiv 2206.06723)
+    encontró que CCI estaba en las MEJORES combinaciones de indicadores
+    para precisión/retorno, mientras RSI estaba en las PEORES (en acciones,
+    no cripto — a validar con datos propios antes de sacar conclusiones).
+    """
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    sma = tp.rolling(p).mean()
+    mad = tp.rolling(p).apply(lambda x: (x - x.mean()).abs().mean(), raw=False)
+    cci = (tp - sma) / (0.015 * mad.replace(0, np.nan))
+    val = cci.iloc[-1]
+    return float(val) if pd.notna(val) else 0.0
+
+def calc_obv_slope(df, p=14):
+    """
+    OBV (On-Balance Volume) — volumen acumulado que suma en velas alcistas
+    y resta en bajistas. Detecta si hay presión de compra/venta real detrás
+    del movimiento de precio (divergencia), a diferencia del volumen ratio
+    actual que solo mide intensidad puntual, no dirección acumulada.
+    Devuelve la PENDIENTE reciente (positiva = presión compradora neta).
+    """
+    closes = df["close"].values
+    vols = df["vol"].values
+    obv = [0.0]
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i-1]: obv.append(obv[-1] + vols[i])
+        elif closes[i] < closes[i-1]: obv.append(obv[-1] - vols[i])
+        else: obv.append(obv[-1])
+    obv_s = pd.Series(obv)
+    recent = obv_s.iloc[-p:]
+    if len(recent) < p: return 0.0
+    mitad = p // 2
+    return float(recent.iloc[-mitad:].mean() - recent.iloc[:mitad].mean())
+
+def confirma_regimen_vwap_ema(precio, vwap, ema20, es_largo):
+    """
+    "VWAP+EMA de régimen": exige que el precio esté del lado correcto de
+    AMBOS (VWAP y EMA20 de 15m) para la dirección de la señal. Usado como
+    filtro adicional obligatorio en el sistema de reapertura (<5min).
+    """
+    if es_largo:
+        return precio > vwap and precio > ema20
+    return precio < vwap and precio < ema20
+
 def calc_stoch_rsi(s, p=14):
     d=s.diff(); g=d.clip(lower=0).rolling(p).mean(); l=(-d.clip(upper=0)).rolling(p).mean()
     rsi=100-100/(1+g/l.replace(0,np.nan)); mn=rsi.rolling(p).min(); mx=rsi.rolling(p).max()
@@ -312,10 +403,21 @@ def analizar_btc() -> dict:
 
 
 # ── Grid óptimo ────────────────────────────────────────────
-def calcular_grid(precio, atr_pct, score):
-    RANGO_PCT_MINIMO = 3.0  # piso mínimo — evita grillas tan ajustadas que se
-    # rompen con cualquier sacudida de precio (caso real: ZETA/ACE con ATR
-    # bajo quedaron con rango de 1.6-2.1% y se salieron de rango en <2hs)
+def calcular_grid(precio, atr_pct, score, adx=None):
+    # v16: piso mínimo diferenciado por ADX (fuerza de tendencia), en vez de
+    # un 6% fijo para todas las monedas por igual. Mismo umbral de 25 que ya
+    # se usa para el gate de modo sombra de ADX (consistencia interna).
+    # Contexto: datos reales (ATOM, MANA) mostraron que el PnL direccional
+    # domina sobre la ganancia de grilla — el beneficio de ensanchar es dar
+    # más margen antes de romper rango en tendencia fuerte, no capturar más
+    # oscilaciones. Cortes 25/35 recomendados por Claude (27/07), sin dato
+    # histórico propio detrás — a revisar con más semanas de automatización.
+    if adx is None or adx < 25:
+        RANGO_PCT_MINIMO = 6.0    # sin tendencia clara / lateral
+    elif adx < 35:
+        RANGO_PCT_MINIMO = 7.5   # tendencia moderada
+    else:
+        RANGO_PCT_MINIMO = 9.0   # tendencia fuerte/sostenida (ej. caso ATOM)
     rango_pct=max(atr_pct*3, RANGO_PCT_MINIMO)
     rango_bajo=round(precio*(1-rango_pct/100),6)
     rango_alto=round(precio*(1+rango_pct/100),6)
@@ -375,7 +477,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         if df15c is None: return None
         if not correlacion_propia(df15c,btc["mov_pct"])["diverge_fuerte"]: return None
 
-    df15=get_velas(par,"15m",100); df1h=get_velas(par,"1h",100)
+    df15=get_velas(par,"15m",100); df1h=get_velas(par,"1h",100); df4h=get_velas(par,"4h",50)
     if df15 is None or len(df15)<30: return None
     precio=float(df15["close"].iloc[-1])
     if precio<=0: return None
@@ -386,6 +488,8 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     e20_15=calc_ema(df15["close"],20); pat=patron_vela(df15)
     vol_r=float(df15["vol"].iloc[-1])/max(float(df15["vol"].iloc[-21:-1].mean()),0.0001)
     corr=correlacion_propia(df15,btc["mov_pct"])
+    adx15=calc_adx(df15)  # v16: fuerza de tendencia, usado en calcular_grid (piso de ancho)
+    vwap15=calc_vwap(df15)  # v16: régimen — usado en modo sombra y reapertura
 
     # ── PASO 1: determinar dirección CANDIDATA primero ──
     if forzar_corto:
@@ -488,7 +592,27 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     precio_max_largo=round(precio*(1+margen_entrada_pct/100),6)
     precio_min_corto=round(precio*(1-margen_entrada_pct/100),6)
 
-    grid = calcular_grid(precio, atr_pct, score)
+    grid = calcular_grid(precio, atr_pct, score, adx=adx15["adx"])
+    razones.append(f"📐 ADX: {adx15['adx']:.1f} (piso grilla: {grid['rango_pct']}%)")
+
+    # ── v16: 4 chequeos en MODO SOMBRA — solo se LOGGEAN, no rechazan la
+    # señal. Sirven para armar el informe a los 4 días (ver db.resumen_sombra).
+    if df4h is not None and len(df4h)>=20:
+        e20_4h=calc_ema(df4h["close"],20)
+        sombra_multi_tf = (precio>e20_4h) if es_largo else (precio<e20_4h)
+    else:
+        sombra_multi_tf = False  # sin dato de 4h disponible -> no aprueba
+    sombra_adx_gate = adx15["adx"]>25 and (
+        (adx15["plus_di"]>adx15["minus_di"] and es_largo) or
+        (adx15["minus_di"]>adx15["plus_di"] and not es_largo)
+    )
+    sombra_volumen = vol_r>=1.5
+    sombra_vwap = (precio>vwap15) if es_largo else (precio<vwap15)
+    cci15 = calc_cci(df15)
+    sombra_cci = (cci15 < -100) if es_largo else (cci15 > 100)
+    obv_slope15 = calc_obv_slope(df15)
+    sombra_obv = (obv_slope15 > 0) if es_largo else (obv_slope15 < 0)
+
     return {
         "par":par,"precio":precio,"score":score,"score_max":16,"pct":pct,
         "prob":"🟢 ALTA","prob_n":3,"direccion":direccion,"razones":razones,
@@ -496,6 +620,10 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         "precio_max_largo":precio_max_largo,
         "precio_min_corto":precio_min_corto,
         "margen_entrada_pct":margen_entrada_pct,
+        "vwap":vwap15,"ema20":e20_15,  # v16: expuestos para confirma_regimen_vwap_ema (reapertura)
+        "sombra":{"multi_tf":sombra_multi_tf,"adx_gate":sombra_adx_gate,
+                  "volumen":sombra_volumen,"vwap":sombra_vwap,
+                  "cci":sombra_cci,"obv":sombra_obv},
         **grid,
     }
 
@@ -541,6 +669,115 @@ def verificar_cierres():
 
 
 # ── Generar alertas ────────────────────────────────────────
+def _abrir_grilla_automatica(r: dict, check: dict):
+    """
+    Llama a Pionex para abrir la grilla real y devuelve (bu_order_id, mensaje).
+    bu_order_id es None si falló. Extraída de generar_alertas() en v16 para
+    reusarla también desde intentar_reapertura() sin duplicar el código.
+    """
+    try:
+        # Antes se usaba row=67 fijo, ignorando el cálculo propio de
+        # r["grillas"] (rango_pct/0.20, adaptado por volatilidad). Corregido
+        # 22/07: validado con fees reales de Pionex (maker 0.02%) que 67 fijo
+        # da un espaciado de apenas 1.1x la fee ida-y-vuelta en rangos
+        # angostos (3%) — casi sin margen real. La fórmula propia da 5x la
+        # fee siempre, sea cual sea el ancho.
+        resp = pionex_api.crear_grilla_futuros(
+            par=r["par"].replace("USDT", ""),
+            top=r["rango_alto"],
+            bottom=r["rango_bajo"],
+            row=r["grillas"],
+            capital_usdt=check["inversion_real"],
+            leverage=10,  # FIJO: decisión confirmada, siempre 10x
+            trend="long" if r["direccion"] == "📈 LARGO" else "short",
+            extra_margin_usdt=check["margen_origen"],
+        )
+        bu_order_id = resp.get("data", {}).get("buOrderId")
+        if bu_order_id:
+            mensaje = (
+                f"✅ Grilla abierta automáticamente "
+                f"(USD {check['inversion_real']:.2f} inversión + "
+                f"USD {check['margen_origen']:.2f} margen, "
+                f"USD {check['capital_operacion']:.2f} total)"
+            )
+            return bu_order_id, mensaje
+        return None, f"⚠️ Pionex no devolvió buOrderId: {resp}"
+    except Exception as e:
+        return None, f"⚠️ Error al abrir grilla automática: {e}"
+
+
+def intentar_reapertura(candidato: dict):
+    """
+    v16 — Sistema de reapertura (<5min): cuando gestion_riesgo detecta que
+    una operación cerró en menos de 5 minutos desde su apertura, llama acá
+    con {"par", "senal_id_original", "num_reapertura_actual",
+    "direccion_original"}. Corre un análisis COMPLETO de esa única moneda
+    (misma vara que una señal nueva: score≥11 + todos los indicadores) MÁS
+    la exigencia adicional de VWAP+EMA de régimen. Solo reabre si la
+    dirección del análisis fresco coincide con la ORIGINAL (confirmado
+    28/07: no se reabre en la dirección contraria aunque el análisis la
+    sugiera — es "reabrir la misma posición", no "abrir cualquier cosa en
+    esta moneda"). Repetible hasta 2 veces (num_reapertura_actual llega
+    como 0 en la primera reapertura, máx. 2).
+    """
+    par = candidato["par"]
+    senal_id_original = candidato["senal_id_original"]
+    num_reapertura_actual = candidato["num_reapertura_actual"]
+
+    if db.esta_pausado_global():
+        print(f"  ⏸️ {par}: no reabre — bot pausado con /pausar_todo (no se compromete capital nuevo).")
+        return
+
+    if num_reapertura_actual >= 2:
+        print(f"  🔁 {par}: ya alcanzó el máximo de 2 reaperturas, no se reabre.")
+        return
+
+    try:
+        btc = analizar_btc()
+        r = analizar_par(par, btc)
+    except Exception as e:
+        print(f"  ⚠️ Reapertura {par}: error al analizar ({e})")
+        return
+
+    if r is None:
+        print(f"  🔁 {par}: no reabre — ya no cumple score≥11 con las condiciones actuales.")
+        return
+
+    direccion_original = candidato.get("direccion_original")
+    if direccion_original and r["direccion"] != direccion_original:
+        print(f"  🔁 {par}: no reabre — el análisis fresco da {r['direccion']}, distinto a la dirección "
+              f"original ({direccion_original}). Solo se reabre la MISMA dirección.")
+        return
+
+    es_largo = r["direccion"] == "📈 LARGO"
+    if not confirma_regimen_vwap_ema(r["precio"], r["vwap"], r["ema20"], es_largo):
+        print(f"  🔁 {par}: no reabre — no confirma VWAP+EMA de régimen.")
+        return
+
+    check = gestion_riesgo.verificar_seguridad_apertura(es_reapertura=True)
+    if not check["permitido"]:
+        print(f"  🔁 {par}: no reabre — {check['motivo']}")
+        return
+
+    nuevo_num = num_reapertura_actual + 1
+    senal_id = db.guardar_senal(r, reabierta_de_id=senal_id_original, num_reapertura=nuevo_num)
+    db.guardar_log_sombra(senal_id, par, r["direccion"], **r["sombra"])
+
+    bu_order_id, mensaje = _abrir_grilla_automatica(r, check)
+    if bu_order_id:
+        db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
+        enviar_telegram(
+            f"🔁 <b>REAPERTURA #{nuevo_num} — {par.replace('USDT','')}</b>\n"
+            f"{r['direccion']}  |  Score: {r['score']}/{r['score_max']}\n"
+            f"Precio: {r['precio']:.6g} USDT\n"
+            f"{mensaje}\n"
+            f"🕐 {hora_arg()} hs (ARG)"
+        )
+        print(f"  ✅ Reapertura #{nuevo_num} {par} {r['direccion']}")
+    else:
+        print(f"  ⚠️ Reapertura {par}: {mensaje}")
+
+
 def generar_alertas(forzar_corto=False, forzar_largo=False):
     try:
         if db.esta_pausado_global():
@@ -618,6 +855,7 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
             return
 
         enviadas=0
+        aperturas_este_ciclo=0  # v16: tope de MAX_APERTURAS_POR_CICLO (1) en gestion_riesgo
         for r in resultados[:MAX_ALERTAS]:
             # Evitar abrir una segunda grilla en un par que YA tiene una
             # operación sin cerrar — SOLO aplica con automatización activa,
@@ -637,45 +875,16 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
             db.marcar_alerta_enviada(clave)
 
             senal_id = db.guardar_senal(r)
+            db.guardar_log_sombra(senal_id, r["par"], r["direccion"], **r["sombra"])
 
             apertura_auto = None
             if AUTOMATIZACION_ACTIVA:
-                check = gestion_riesgo.verificar_seguridad_apertura()
+                check = gestion_riesgo.verificar_seguridad_apertura(aperturas_este_ciclo=aperturas_este_ciclo)
                 if check["permitido"]:
-                    try:
-                        # Antes se usaba row=67 fijo, ignorando el cálculo propio
-                        # de r["grillas"] (rango_pct/0.20, adaptado por volatilidad).
-                        # Corregido 22/07: validado con fees reales de Pionex (maker
-                        # 0.02%) que 67 fijo da un espaciado de apenas 1.1x la fee
-                        # ida-y-vuelta en rangos angostos (3%) — casi sin margen real.
-                        # La fórmula propia da 5x la fee siempre, sea cual sea el
-                        # ancho. Ya se guarda en grillas_calc (db.guardar_senal) —
-                        # de acá en más ese valor coincide con lo que Pionex
-                        # realmente usa, permitiendo analizar con datos reales el
-                        # efecto en velocidad de rotación.
-                        resp = pionex_api.crear_grilla_futuros(
-                            par=r["par"].replace("USDT", ""),
-                            top=r["rango_alto"],
-                            bottom=r["rango_bajo"],
-                            row=r["grillas"],
-                            capital_usdt=check["inversion_real"],
-                            leverage=10,  # FIJO: decisión confirmada, siempre 10x
-                            trend="long" if r["direccion"] == "📈 LARGO" else "short",
-                            extra_margin_usdt=check["margen_origen"],
-                        )
-                        bu_order_id = resp.get("data", {}).get("buOrderId")
-                        if bu_order_id:
-                            db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
-                            apertura_auto = (
-                                f"✅ Grilla abierta automáticamente "
-                                f"(USD {check['inversion_real']:.2f} inversión + "
-                                f"USD {check['margen_origen']:.2f} margen, "
-                                f"USD {check['capital_operacion']:.2f} total)"
-                            )
-                        else:
-                            apertura_auto = f"⚠️ Pionex no devolvió buOrderId: {resp}"
-                    except Exception as e:
-                        apertura_auto = f"⚠️ Error al abrir grilla automática: {e}"
+                    bu_order_id, apertura_auto = _abrir_grilla_automatica(r, check)
+                    if bu_order_id:
+                        db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
+                        aperturas_este_ciclo += 1
                 else:
                     apertura_auto = f"⛔ No se abrió automáticamente: {check['motivo']}"
 
@@ -831,12 +1040,18 @@ def main():
     if AUTOMATIZACION_ACTIVA:
         def _monitorear():
             try:
-                acciones = gestion_riesgo.monitorear_zonas_riesgo()
+                resultado = gestion_riesgo.monitorear_zonas_riesgo()
+                acciones = resultado["acciones"]
                 if acciones:
                     enviar_telegram("🛡️ <b>Monitoreo de riesgo</b>\n" + "\n".join(acciones))
+                # v16: sistema de reapertura — se dispara acá, fuera del
+                # ciclo normal de 15 min de generar_alertas(), porque el
+                # cierre en <5min se detecta en este monitoreo de riesgo.
+                for candidato in resultado["candidatos_reapertura"]:
+                    intentar_reapertura(candidato)
             except Exception as e:
                 print(f"Error monitoreando riesgo: {e}")
-        schedule.every(30).minutes.do(_monitorear)
+        schedule.every(1).minutes.do(_monitorear)  # v16: 30 -> 1 min, para que la reapertura <5min sea realmente inmediata
 
     h_res_utc=(9+3)%24
     schedule.every().day.at(f"{h_res_utc:02d}:03").do(resumen_matutino)
