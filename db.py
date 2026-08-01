@@ -42,6 +42,8 @@ def _migrar_columnas_riesgo(cur):
         ("cierre_pendiente_desde", "TEXT"),  # 28/07: debounce de falsos cierres (ver monitorear_zonas_riesgo)
         ("aviso_10hs_enviado", "INTEGER DEFAULT 0"),  # 28/07: para no repetir el aviso informativo de 10hs en cada ciclo
         ("peor_resultado_pct", "REAL"),  # 28/07 (modo sombra): peor % alcanzado durante la vida de la operación — MAE real, mismas unidades que STOP_LOSS_PCT
+        ("rejilla_pct", "REAL"),  # 29/07: última lectura de ganancia por oscilación de grid (Pionex "Ganancia de rejilla")
+        ("tendencia_pct", "REAL"),  # 29/07: última lectura de ganancia por movimiento direccional (Pionex "PnL tend.")
     ]
     for nombre, tipo in columnas_nuevas:
         try:
@@ -346,6 +348,16 @@ def marcar_aviso_10hs_enviado(senal_id: int):
     conn = _conn()
     cur = conn.cursor()
     cur.execute("UPDATE senales SET aviso_10hs_enviado = 1 WHERE id = ?", (senal_id,))
+    conn.commit()
+    conn.close()
+
+
+def actualizar_desglose_resultado(senal_id: int, rejilla_pct: float, tendencia_pct: float):
+    """29/07: guarda la última lectura de rejilla vs. tendencia (se sobreescribe cada ciclo, no es histórico)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET rejilla_pct = ?, tendencia_pct = ? WHERE id = ?",
+                (rejilla_pct, tendencia_pct, senal_id))
     conn.commit()
     conn.close()
 

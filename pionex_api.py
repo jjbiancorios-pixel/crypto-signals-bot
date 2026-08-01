@@ -461,6 +461,35 @@ def calcular_resultado_actual(bu_order_id: str, capital_total_real: float = None
         return None
 
 
+def calcular_resultado_desglosado(bu_order_id: str, capital_total_real: float = None):
+    """
+    29/07 — Igual que calcular_resultado_actual, pero además separa cuánto
+    del resultado viene de la GRILLA (oscilación, gridProfit de Pionex) vs.
+    de la TENDENCIA (movimiento direccional del precio) — mismos dos
+    componentes que la app de Pionex muestra por separado ("Ganancia de
+    rejilla" / "PnL tend."). Sirve para comparar si el grid realmente
+    aporta valor por sobre una posición direccional simple, o si casi todo
+    el resultado viene de la dirección (caso real observado: AAVE y HBAR,
+    donde la rejilla aportó +0.08/+0.16% y la tendencia el resto).
+    Devuelve {"total_pct", "rejilla_pct", "tendencia_pct"} o None si falla.
+    """
+    data = consultar_orden(bu_order_id).get("data", {}) or {}
+    bod = data.get("buOrderData", {}) or {}
+    try:
+        margin_balance = float(bod.get("marginBalance", 0) or 0)
+        init_investment = float(capital_total_real) if capital_total_real is not None else float(bod.get("initUsdtInvestment", 0) or 0)
+        quote_investment = float(bod.get("quoteInvestment") or bod.get("initQuoteInvestment") or 0)
+        if quote_investment <= 0:
+            return None
+        total_pct = round((margin_balance - init_investment) / quote_investment * 100, 4)
+        grid_profit_usd = float(bod.get("gridProfit", 0) or 0)
+        rejilla_pct = round(grid_profit_usd / quote_investment * 100, 4)
+        tendencia_pct = round(total_pct - rejilla_pct, 4)
+        return {"total_pct": total_pct, "rejilla_pct": rejilla_pct, "tendencia_pct": tendencia_pct}
+    except (ValueError, TypeError):
+        return None
+
+
 def esta_cerrada(bu_order_id: str) -> dict:
     """
     Detecta si una grilla YA CERRÓ en Pionex (tocó TP, se canceló, o se

@@ -244,9 +244,16 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         # ninguna regla basada en tiempo hubiera prevenido).
         capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
         try:
-            resultado_actual_sl = pionex_api.calcular_resultado_actual(bu_order_id, capital_total_real=capital_real_op)
+            desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, capital_total_real=capital_real_op)
         except Exception:
-            resultado_actual_sl = None
+            desglose = None
+        resultado_actual_sl = desglose["total_pct"] if desglose else None
+
+        # 29/07 (modo sombra) — guardar el desglose rejilla vs. tendencia,
+        # para comparar más adelante si el grid aporta valor real por
+        # sobre una posición direccional simple.
+        if desglose:
+            db.actualizar_desglose_resultado(senal_id, desglose["rejilla_pct"], desglose["tendencia_pct"])
 
         # 28/07 (modo sombra) — registrar el peor resultado alcanzado hasta
         # ahora, para poder calcular MAE real más adelante con datos
