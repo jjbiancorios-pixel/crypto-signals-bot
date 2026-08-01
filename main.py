@@ -1024,17 +1024,16 @@ def _chequeo_btc_rapido():
 
 def main():
     db.init_db()
-    print(f"🤖 Bot v13 iniciado — {len(PARES)} pares")
+    print(f"🤖 Bot v16 iniciado — {len(PARES)} pares")
     enviar_telegram(
-        f"🤖 <b>JJ Cripto Bot v13 iniciado</b>\n"
+        f"🤖 <b>JJ Cripto Bot v16 iniciado</b>\n"
         f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
         f"⏰ 7:00-23:00 ARG | cada 15 min (:03, :18, :33, :48)\n"
-        f"🎯 Solo ALTA prob. | TP fijo 1.35% + Grillas recomendadas Pionex\n"
-        f"🔧 RSI ajustado 29/71 | Dirección-primero en scoring\n"
-        f"🗑️ Eliminados: RNDR,1000SHIB,CYBER,DYDX,MINA,1000BONK\n"
-        f"➕ Re-agregado: OP (confirmado disponible de nuevo en Pionex, 20/07)\n"
-        f"➕ Nuevos: TON,EIGEN,MOVE,VIRTUAL,PENGU,MOCA,SCR\n"
-        f"💾 SQLite | 📊 /diario /semanal /mensual /historial\n"
+        f"💰 Capital 35%x2 posiciones + 30% reserva | 10x fijo\n"
+        f"🛑 Stop-loss {gestion_riesgo.STOP_LOSS_PCT}% | TP fijo 1.35%\n"
+        f"📐 Piso de grilla por ADX (6%/7.5%/9%) | Reapertura <5min\n"
+        f"🔬 Modo sombra: multi-tf, ADX, volumen, VWAP, CCI, OBV, grid dinámico\n"
+        f"💾 SQLite | 📊 /diario /semanal /mensual /historial /escanear /corregir\n"
         f"Comandos: /ayuda"
     )
 
