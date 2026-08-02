@@ -198,6 +198,21 @@ def init_db():
         )
     """)
 
+    # 01/08 — Interés compuesto diario + reserva de recupero post-pérdida.
+    # Un registro por día: se fija UNA vez a las 00:01 (con capital real,
+    # vía API, solo si no hay operaciones abiertas) y queda fijo para
+    # todas las operaciones de ese día.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS capital_diario (
+            fecha TEXT PRIMARY KEY,
+            capital_dia REAL NOT NULL,
+            tamano_objetivo REAL NOT NULL,
+            reserva_inicial REAL NOT NULL,
+            reserva_restante REAL NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+
     _migrar_columnas_riesgo(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
@@ -1105,6 +1120,72 @@ def capital_apartado_total() -> float:
     total = cur.fetchone()[0]
     conn.close()
     return float(total)
+
+
+def resultado_acumulado_usd_hoy() -> float:
+    """
+    01/08 — Suma en USD (no %) de todas las operaciones YA CERRADAS hoy.
+    Negativo si el día viene en pérdida — se usa para decidir si corresponde
+    completar con la reserva de recupero al abrir la próxima operación.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute("""
+        SELECT COALESCE(SUM(resultado_pct * capital_asignado / 100), 0)
+        FROM senales WHERE fecha = ? AND cerrado = 1
+    """, (hoy,))
+    total = cur.fetchone()[0]
+    conn.close()
+    return round(total, 2)
+
+
+def guardar_capital_diario(capital_dia: float, tamano_objetivo: float, reserva_inicial: float):
+    """
+    01/08 — Fija los 3 números del día (capital, tamaño objetivo por
+    operación, reserva de recupero) — se llama UNA vez a las 00:01, solo
+    si no hay operaciones abiertas. reserva_restante arranca igual a
+    reserva_inicial y se va gastando durante el día si hace falta.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute("""
+        INSERT OR REPLACE INTO capital_diario
+            (fecha, capital_dia, tamano_objetivo, reserva_inicial, reserva_restante, creado)
+        VALUES (?,?,?,?,?,?)
+    """, (hoy, capital_dia, tamano_objetivo, reserva_inicial, reserva_inicial, datetime.now(TZ_ARG).isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def obtener_capital_diario():
+    """
+    01/08 — Devuelve el registro de HOY (dict) o None si todavía no se
+    ejecutó el recálculo diario (ej. porque había operaciones abiertas a
+    las 00:01 y se pospuso). Ausencia de registro = recálculo pendiente.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute("SELECT * FROM capital_diario WHERE fecha = ?", (hoy,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def descontar_reserva_diaria(monto: float):
+    """01/08 — Descuenta uso de la reserva de recupero del día (nunca queda negativa)."""
+    conn = _conn()
+    cur = conn.cursor()
+    hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
+    cur.execute("""
+        UPDATE capital_diario SET reserva_restante = MAX(0, reserva_restante - ?)
+        WHERE fecha = ?
+    """, (monto, hoy))
+    conn.commit()
+    conn.close()
+
 
 
 def ganancia_hoy_pct(capital_total: float) -> float:

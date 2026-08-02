@@ -1051,6 +1051,14 @@ def main():
     if AUTOMATIZACION_ACTIVA:
         def _monitorear():
             try:
+                # 01/08: interés compuesto — se reintenta acá en cada ciclo
+                # por si a las 00:01 había operaciones abiertas y se
+                # pospuso (la función misma chequea si ya corresponde o no,
+                # es seguro llamarla de más).
+                aviso_capital = gestion_riesgo.intentar_recalculo_diario()
+                if aviso_capital:
+                    enviar_telegram(aviso_capital)
+
                 resultado = gestion_riesgo.monitorear_zonas_riesgo()
                 acciones = resultado["acciones"]
                 if acciones:
@@ -1063,6 +1071,14 @@ def main():
             except Exception as e:
                 print(f"Error monitoreando riesgo: {e}")
         schedule.every(1).minutes.do(_monitorear)  # v16: 30 -> 1 min, para que la reapertura <5min sea realmente inmediata
+
+        # 01/08: intento "principal" a las 00:01 ARG (=03:01 UTC, servidor
+        # corre en UTC) — normalmente alcanza con este, el de _monitorear()
+        # (arriba) es solo el respaldo por si justo a esa hora había
+        # operaciones abiertas.
+        schedule.every().day.at("03:01").do(
+            lambda: enviar_telegram(msg) if (msg := gestion_riesgo.intentar_recalculo_diario()) else None
+        )
 
     h_res_utc=(9+3)%24
     schedule.every().day.at(f"{h_res_utc:02d}:03").do(resumen_matutino)

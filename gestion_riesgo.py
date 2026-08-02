@@ -25,7 +25,8 @@ CAPITAL_TOTAL_USD = 782  # 28/07: actualizado con el capital real post-pérdidas
 # impida ejecutar el stop-loss a tiempo) se cubre ahora con el margen de
 # origen más chico (10%, ver RATIO_MARGEN_ORIGEN), no con una reserva aparte.
 PCT_OPERATIVO = 1.0  # v16: sin reserva aparte — el tope real de todos modos lo pone MAX_POSICIONES_SIMULTANEAS x PCT_CAPITAL_POR_OPERACION
-PCT_CAPITAL_POR_OPERACION = 0.35  # v16: 6% -> 35% (pocas y grandes, alta convicción)
+PCT_CAPITAL_POR_OPERACION = 0.425  # 01/08: 35% -> 42.5% (Juanjo, punto medio entre 35% y 50% que se discutieron). Con interés compuesto diario, esto es el valor de RESPALDO si todavía no corrió el recálculo de las 00:01 — el tamaño real del día lo fija db.capital_diario.tamano_objetivo
+RESERVA_RECUPERO_PCT = 0.15  # 01/08: % del capital del día que se reserva para completar el tamaño objetivo si el día viene en pérdida (no es margen ni reserva "inmóvil" — se usa para ABRIR, no para reforzar)
 MAX_POSICIONES_SIMULTANEAS = 2  # v16: tope duro nuevo — antes no existía (~14 con el esquema 6%)
 # v16: recalibrado 6 -> 1. El 6 (de la actualización 20-21/07) quedaba
 # matemáticamente imposible de alcanzar con el tope nuevo de 2 posiciones
@@ -84,11 +85,49 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
     3. Debe haber capital operativo suficiente (70% del total: 35% x2
        posiciones, 30% restante es reserva líquida inmovilizada).
 
-    El 35% de capital por operación se reparte 90/10 entre inversión real
-    y margen de origen (RATIO_MARGEN_ORIGEN, bajado de 30% el 01/08 — con
-    el stop-loss real ya activo, un margen tan grande quedó redundante).
+    El 42.5% de capital por operación se reparte 90/10 entre inversión real
+    y margen de origen (RATIO_MARGEN_ORIGEN).
+
+    01/08 — INTERÉS COMPUESTO + RESERVA DE RECUPERO:
+    - `tamano_objetivo`: fijado una vez a las 00:01 (42.5% del capital real
+      de ESE momento) — es la referencia/techo que se intenta mantener
+      todo el día, no cambia operación a operación.
+    - Cada operación calcula su tamaño NATURAL como 42.5% del capital real
+      de HOY (capital del día + resultado acumulado de operaciones ya
+      cerradas hoy) — este sí se achica solo si el día viene perdiendo.
+    - Si el día está en pérdida Y el tamaño natural quedó por debajo del
+      objetivo, se completa la diferencia con la reserva de recupero
+      (15% fijado a las 00:01, se va gastando durante el día) — para que
+      una operación perdedora no reduzca el tamaño en dólares de la
+      siguiente. Se corta sola si el día vuelve a positivo o si la
+      reserva ya se agotó.
+    - Si todavía no corrió el recálculo diario (recién desplegado, o
+      pospuesto por tener operaciones abiertas a las 00:01), cae al
+      cálculo viejo (capital_total * PCT_CAPITAL_POR_OPERACION) sin
+      reserva, para no bloquear el bot mientras tanto.
     """
-    capital_operacion = capital_total * PCT_CAPITAL_POR_OPERACION
+    cap_diario = db.obtener_capital_diario()
+    if cap_diario:
+        tamano_objetivo = cap_diario["tamano_objetivo"]
+        capital_base = cap_diario["capital_dia"]
+        reserva_restante = cap_diario["reserva_restante"]
+    else:
+        tamano_objetivo = capital_total * PCT_CAPITAL_POR_OPERACION
+        capital_base = capital_total
+        reserva_restante = 0.0
+
+    resultado_hoy_usd = db.resultado_acumulado_usd_hoy()
+    capital_real_hoy = capital_base + resultado_hoy_usd
+    tamano_natural_ahora = capital_real_hoy * PCT_CAPITAL_POR_OPERACION
+
+    usando_reserva = 0.0
+    if resultado_hoy_usd < 0 and tamano_natural_ahora < tamano_objetivo and reserva_restante > 0:
+        faltante = tamano_objetivo - tamano_natural_ahora
+        usando_reserva = min(faltante, reserva_restante)
+        capital_operacion = tamano_natural_ahora + usando_reserva
+    else:
+        capital_operacion = tamano_objetivo if cap_diario else tamano_natural_ahora
+
     margen_origen = round(capital_operacion * RATIO_MARGEN_ORIGEN, 2)
     inversion_real = round(capital_operacion - margen_origen, 2)
 
@@ -113,7 +152,11 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
     comprometido = db.capital_comprometido_total()
     apartado = db.capital_apartado_total()
 
-    capital_operativo_max = capital_total * PCT_OPERATIVO
+    # Techo operativo real: se basa en capital_real_hoy (ya ajustado por
+    # el resultado de hoy), no en el número fijo de las 00:01 — para que
+    # el chequeo de "hay plata suficiente comprometida vs. disponible"
+    # sea sobre la realidad de ahora, no sobre una foto vieja del día.
+    capital_operativo_max = capital_real_hoy * PCT_OPERATIVO
     capital_disponible = capital_operativo_max - comprometido - apartado
 
     modo_restrictivo = atascadas >= MAX_ATASCADAS_RIESGO
@@ -121,7 +164,7 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
     if modo_restrictivo:
         # En modo restrictivo, el objetivo pasa a ser el 3% del capital
         # DISPONIBLE ese día (no del total). Si ya se llegó, no se abre más.
-        capital_disponible_hoy = capital_total - comprometido - apartado
+        capital_disponible_hoy = capital_real_hoy - comprometido - apartado
         ganancia_hoy = db.ganancia_hoy_pct(capital_disponible_hoy) if capital_disponible_hoy > 0 else 0
         if ganancia_hoy >= OBJETIVO_DIARIO_PCT:
             return {
@@ -141,6 +184,9 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
             "capital_operacion": capital_operacion,
         }
 
+    if usando_reserva > 0:
+        db.descontar_reserva_diaria(usando_reserva)
+
     return {
         "permitido": True,
         "motivo": "OK",
@@ -149,6 +195,7 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
         "margen_origen": margen_origen,
         "modo_restrictivo": modo_restrictivo,
         "atascadas": atascadas,
+        "usando_reserva": round(usando_reserva, 2),
     }
 
 
@@ -392,3 +439,42 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
                     acciones.append(f"⚠️ {par}: zona roja pero falló refuerzo de margen ({e})")
 
     return {"acciones": acciones, "candidatos_reapertura": candidatos_reapertura}
+
+
+def intentar_recalculo_diario() -> str:
+    """
+    01/08 — Interés compuesto: se llama desde main.py, tanto en un
+    schedule fijo a las 00:01 ARG como en CADA ciclo de monitoreo (por si
+    a las 00:01 había operaciones abiertas y se pospuso). Es seguro
+    llamarla de más: si ya existe el registro de hoy, no hace nada.
+
+    Solo recalcula si:
+    1. Todavía no hay registro para el día de hoy (db.obtener_capital_diario() da None).
+    2. No hay ninguna operación abierta ahora mismo.
+    3. La consulta de balance real a Pionex responde con éxito (si falla,
+       se reintenta en el próximo ciclo — nunca se asume $0).
+
+    Devuelve un string para loggear/avisar por Telegram, o None si no
+    correspondía hacer nada este ciclo.
+    """
+    if db.obtener_capital_diario() is not None:
+        return None  # ya se calculó hoy
+
+    posiciones_abiertas = len(db.operaciones_abiertas_con_bu_order())
+    if posiciones_abiertas > 0:
+        return None  # pospuesto — se reintenta solo en el próximo ciclo
+
+    capital_real = pionex_api.obtener_balance_cuenta()
+    if capital_real is None:
+        return "⚠️ Recálculo diario de capital: falló la consulta de balance a Pionex, se reintenta en 1 min."
+
+    tamano_objetivo = round(capital_real * PCT_CAPITAL_POR_OPERACION, 2)
+    reserva_inicial = round(capital_real * RESERVA_RECUPERO_PCT, 2)
+    db.guardar_capital_diario(capital_real, tamano_objetivo, reserva_inicial)
+
+    return (
+        f"💰 <b>Interés compuesto — nuevo día</b>\n"
+        f"Capital real: USD {capital_real:.2f}\n"
+        f"Tamaño por operación hoy: USD {tamano_objetivo:.2f} ({PCT_CAPITAL_POR_OPERACION*100:.1f}%)\n"
+        f"Reserva de recupero: USD {reserva_inicial:.2f} ({RESERVA_RECUPERO_PCT*100:.0f}%)"
+    )

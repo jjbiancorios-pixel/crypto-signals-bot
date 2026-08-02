@@ -170,6 +170,42 @@ def consultar_orden(bu_order_id: str) -> dict:
     return resp.json()
 
 
+def obtener_balance_cuenta() -> float:
+    """
+    01/08 — Consulta el balance REAL de USDT en la cuenta de trading, vía
+    GET /api/v1/account/balances. Se usa para el recálculo diario de
+    capital (interés compuesto).
+
+    OJO: este endpoint EXCLUYE las cuentas de bot y de earn — solo tiene
+    sentido llamarlo cuando NO hay ninguna operación de grid abierta (que
+    es justo cuando se ejecuta el recálculo diario: se pospone mientras
+    haya posiciones activas). Con posiciones abiertas, este número NO
+    reflejaría el capital real total.
+
+    Devuelve None si falla la consulta (no se debe usar un None como si
+    fuera $0 — el llamador debe abortar el recálculo ese día y reintentar
+    en el próximo ciclo, no vaciar el capital por un error de red).
+    """
+    path = "/api/v1/account/balances"
+    timestamp, firma = _firmar("GET", path, "")
+    headers = {
+        "PIONEX-KEY": PIONEX_API_KEY,
+        "PIONEX-SIGNATURE": firma,
+    }
+    url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        data = resp.json()
+        if not data.get("result"):
+            return None
+        for b in data.get("data", {}).get("balances", []):
+            if b.get("coin") == "USDT":
+                return round(float(b.get("free", 0)) + float(b.get("frozen", 0)), 2)
+        return 0.0
+    except Exception:
+        return None
+
+
 def _precio_bybit(par):
     r = requests.get(f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={par}", timeout=6)
     data = r.json()
