@@ -899,6 +899,10 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                         aperturas_este_ciclo += 1
                 else:
                     apertura_auto = f"⛔ No se abrió automáticamente: {check['motivo']}"
+                    # 03/08: como no consiguió lugar real, se guarda aparte
+                    # para simular su comportamiento (MAE/MFE, TP/stop-loss)
+                    # sin arriesgar capital — más datos de patrones, más rápido.
+                    db.guardar_senal_simulada(r, motivo_no_apertura=check["motivo"])
 
             # Margen de entrada
             if r["direccion"]=="📈 LARGO":
@@ -1068,6 +1072,11 @@ def main():
                 # cierre en <5min se detecta en este monitoreo de riesgo.
                 for candidato in resultado["candidatos_reapertura"]:
                     intentar_reapertura(candidato)
+
+                # 03/08: seguimiento de señales simuladas (no arriesga
+                # capital, no manda avisos por Telegram para no saturar —
+                # se consulta con /simuladas cuando se quiera revisar).
+                gestion_riesgo.simular_seguimiento()
             except Exception as e:
                 print(f"Error monitoreando riesgo: {e}")
         schedule.every(1).minutes.do(_monitorear)  # v16: 30 -> 1 min, para que la reapertura <5min sea realmente inmediata

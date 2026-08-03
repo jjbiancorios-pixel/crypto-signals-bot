@@ -478,3 +478,39 @@ def intentar_recalculo_diario() -> str:
         f"Tamaño por operación hoy: USD {tamano_objetivo:.2f} ({PCT_CAPITAL_POR_OPERACION*100:.1f}%)\n"
         f"Reserva de recupero: USD {reserva_inicial:.2f} ({RESERVA_RECUPERO_PCT*100:.0f}%)"
     )
+
+
+def simular_seguimiento():
+    """
+    03/08 — Sigue el precio de mercado real de las señales SIMULADAS
+    (calificaron score≥11 pero no consiguieron lugar real por el tope de
+    2 posiciones / 1 apertura por ciclo). No arriesga capital real — usa
+    una aproximación de movimiento de precio + apalancamiento (SIN el
+    aporte extra de oscilación del grid, que en datos reales resultó ser
+    chico frente al componente de tendencia — ver rejilla vs. tendencia).
+    Se llama desde el mismo ciclo de 1 min que el resto del monitoreo.
+
+    Cierra por TP (1.35%) o por STOP_LOSS_PCT (-20%), igual que una
+    operación real — para poder comparar patrones de comportamiento en
+    pérdida sin esperar semanas de datos reales (solo 2 posiciones a la
+    vez limitan mucho la velocidad de aprendizaje real).
+    """
+    abiertas = db.operaciones_simuladas_abiertas()
+    for op in abiertas:
+        try:
+            precio_actual = pionex_api.obtener_precio_mercado(op["par"])
+        except Exception:
+            precio_actual = None
+        if precio_actual is None or not op["precio_entrada"]:
+            continue
+
+        cambio_pct = (precio_actual - op["precio_entrada"]) / op["precio_entrada"] * 100
+        es_largo = op["direccion"] == "📈 LARGO"
+        resultado_simulado = cambio_pct * (op["apal"] or 10) * (1 if es_largo else -1)
+
+        db.actualizar_seguimiento_simulada(op["id"], resultado_simulado)
+
+        if resultado_simulado >= 1.35:
+            db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="tp_simulado")
+        elif resultado_simulado <= STOP_LOSS_PCT:
+            db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="stop_loss_simulado")

@@ -364,6 +364,29 @@ def _cmd_rendimiento() -> str:
     return ""  # ya se mandó la imagen, no hace falta texto adicional
 
 
+def _cmd_simuladas() -> str:
+    """
+    03/08 — Resumen de las señales SIMULADAS (calificaron pero no
+    consiguieron lugar real por el tope de 2 posiciones). Compara su
+    comportamiento contra las operaciones reales, sin arriesgar capital.
+    """
+    abiertas = db.operaciones_simuladas_abiertas()
+    resumen = db.resumen_simuladas()
+    if not resumen.get("total_cerradas") and not abiertas:
+        return "🧪 Sin señales simuladas todavía (recién se activaron el 03/08)."
+
+    lineas = ["🧪 <b>Señales simuladas</b> (sin capital real)", f"Abiertas ahora: {len(abiertas)}"]
+    if resumen.get("total_cerradas"):
+        lineas.append(
+            f"\nCerradas: {resumen['total_cerradas']} | Win rate: {resumen['win_rate_pct']}%\n"
+            f"✅ {resumen['ganadas']}  ❌ {resumen['perdidas']}\n"
+            f"MAE promedio: {resumen['mae_promedio']}% | MFE promedio: {resumen['mfe_promedio']}%"
+        )
+    else:
+        lineas.append("\nTodavía ninguna cerró.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -597,6 +620,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_mensual()
     elif cmd == "/rendimiento":
         return _cmd_rendimiento()
+    elif cmd == "/simuladas":
+        return _cmd_simuladas()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -638,6 +663,9 @@ def procesar_comando(texto: str) -> str:
             "/rendimiento\n"
             "  📊 Imagen descargable: % diario/semanal/mensual sobre el\n"
             "  capital de inicio de cada período (sin detalle por operación).\n\n"
+            "/simuladas\n"
+            "  🧪 Resumen de señales que calificaron pero no consiguieron\n"
+            "  lugar real (sin capital) — MAE/MFE/win rate simulado.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

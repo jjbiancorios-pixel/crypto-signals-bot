@@ -213,6 +213,36 @@ def init_db():
         )
     """)
 
+    # 03/08 — Señales que calificaron (score≥11) pero NO consiguieron lugar
+    # real (tope de 2 posiciones / 1 apertura por ciclo). Se les hace
+    # seguimiento igual que a una real (MAE/MFE, cierre por TP/stop-loss),
+    # aproximando el resultado con precio+apalancamiento (sin el aporte
+    # extra de oscilación del grid) — sin arriesgar capital, para juntar
+    # patrones de comportamiento más rápido de lo que daría esperar solo
+    # las 2 operaciones reales simultáneas.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS senales_simuladas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            par TEXT NOT NULL,
+            direccion TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            hora_apertura TEXT NOT NULL,
+            precio_entrada REAL NOT NULL,
+            apal INTEGER DEFAULT 10,
+            score INTEGER,
+            razones TEXT,
+            motivo_no_apertura TEXT,
+            cerrada INTEGER DEFAULT 0,
+            resultado_pct REAL,
+            peor_resultado_pct REAL,
+            mejor_resultado_pct REAL,
+            motivo_cierre TEXT,
+            tiempo_real_min INTEGER,
+            hora_cierre TEXT,
+            creado TEXT NOT NULL
+        )
+    """)
+
     _migrar_columnas_riesgo(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
@@ -1236,6 +1266,112 @@ def resultado_usd_desde(fecha_desde: str) -> dict:
         elif f["resultado_pct"] < 0:
             perdidas += 1
     return {"total_usd": round(total_usd, 2), "ganadas": ganadas, "perdidas": perdidas, "total_ops": len(filas)}
+
+
+def guardar_senal_simulada(r: dict, motivo_no_apertura: str = None) -> int:
+    """
+    03/08 — Guarda una señal que calificó (score≥11) pero no consiguió
+    lugar real. Se le hace seguimiento aparte de las reales, sin
+    comprometer capital.
+    """
+    import json
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    razones_json = json.dumps(r.get("razones", []), ensure_ascii=False)
+    cur.execute("""
+        INSERT INTO senales_simuladas
+            (par, direccion, fecha, hora_apertura, precio_entrada, apal, score, razones, motivo_no_apertura, creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (
+        r["par"], r["direccion"], ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"),
+        r["precio"], r.get("apal", 10), r["score"], razones_json, motivo_no_apertura, ahora.isoformat(),
+    ))
+    conn.commit()
+    sim_id = cur.lastrowid
+    conn.close()
+    return sim_id
+
+
+def operaciones_simuladas_abiertas() -> list:
+    """03/08 — Todas las señales simuladas todavía sin cerrar."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM senales_simuladas WHERE cerrada = 0")
+    filas = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return filas
+
+
+def actualizar_seguimiento_simulada(sim_id: int, resultado_actual: float):
+    """03/08 — Actualiza MAE/MFE de una señal simulada (mismo patrón que las reales)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE senales_simuladas
+        SET peor_resultado_pct = CASE WHEN peor_resultado_pct IS NULL OR ? < peor_resultado_pct THEN ? ELSE peor_resultado_pct END,
+            mejor_resultado_pct = CASE WHEN mejor_resultado_pct IS NULL OR ? > mejor_resultado_pct THEN ? ELSE mejor_resultado_pct END
+        WHERE id = ?
+    """, (resultado_actual, resultado_actual, resultado_actual, resultado_actual, sim_id))
+    conn.commit()
+    conn.close()
+
+
+def cerrar_senal_simulada(sim_id: int, resultado_pct: float, motivo: str):
+    """03/08 — Cierra una señal simulada (por TP o stop-loss simulado)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT hora_apertura, fecha FROM senales_simuladas WHERE id = ?", (sim_id,))
+    row = cur.fetchone()
+    tiempo_real_min = None
+    if row:
+        try:
+            apertura = datetime.strptime(f"{row['fecha']} {row['hora_apertura']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
+            tiempo_real_min = int((datetime.now(TZ_ARG) - apertura).total_seconds() / 60)
+        except Exception:
+            pass
+    cur.execute("""
+        UPDATE senales_simuladas
+        SET cerrada = 1, resultado_pct = ?, motivo_cierre = ?, tiempo_real_min = ?, hora_cierre = ?
+        WHERE id = ?
+    """, (resultado_pct, motivo, tiempo_real_min, datetime.now(TZ_ARG).strftime("%H:%M"), sim_id))
+    conn.commit()
+    conn.close()
+
+
+def resumen_simuladas(desde_fecha: str = None) -> dict:
+    """
+    03/08 — Informe agregado de las señales simuladas: cuántas, win rate,
+    MAE/MFE promedio — para comparar el comportamiento de las señales que
+    NO consiguieron lugar real contra las que sí (útil para ver si el
+    tope de 2 posiciones nos está haciendo perder buenas señales).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT * FROM senales_simuladas WHERE cerrada = 1"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    ganadas = [f for f in filas if f["resultado_pct"] is not None and f["resultado_pct"] > 0]
+    perdidas = [f for f in filas if f["resultado_pct"] is not None and f["resultado_pct"] <= 0]
+    mae_vals = [f["peor_resultado_pct"] for f in filas if f["peor_resultado_pct"] is not None]
+    mfe_vals = [f["mejor_resultado_pct"] for f in filas if f["mejor_resultado_pct"] is not None]
+
+    return {
+        "total_cerradas": len(filas),
+        "ganadas": len(ganadas),
+        "perdidas": len(perdidas),
+        "win_rate_pct": round(len(ganadas) / len(filas) * 100, 1) if filas else None,
+        "mae_promedio": round(sum(mae_vals) / len(mae_vals), 2) if mae_vals else None,
+        "mfe_promedio": round(sum(mfe_vals) / len(mfe_vals), 2) if mfe_vals else None,
+    }
 
 
 def resumen_rendimiento() -> dict:
