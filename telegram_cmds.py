@@ -23,6 +23,8 @@ No modifica generar_alertas(), analizar_par() ni calcular_grid().
 """
 import requests
 import os
+import io
+from PIL import Image, ImageDraw, ImageFont
 import db
 from datetime import datetime
 
@@ -44,6 +46,23 @@ def _api(method: str, **params):
 
 def enviar(msg: str):
     _api("sendMessage", chat_id=CHAT_ID, text=msg, parse_mode="HTML")
+
+
+def enviar_imagen(imagen_bytes: bytes, nombre_archivo: str, caption: str = ""):
+    """
+    03/08 — Manda una imagen como DOCUMENTO (no sendPhoto) para que Telegram
+    no la comprima — así queda descargable en calidad original con solo
+    tocarla/mantenerla apretada.
+    """
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    try:
+        files = {"document": (nombre_archivo, imagen_bytes, "image/png")}
+        data = {"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"}
+        r = requests.post(url, data=data, files=files, timeout=30)
+        return r.json()
+    except Exception as e:
+        print(f"Telegram API error (sendDocument): {e}")
+        return {}
 
 
 def _quitar_simbolo(par_in: str) -> str:
@@ -263,6 +282,86 @@ def _cmd_semanal() -> str:
 def _cmd_mensual() -> str:
     r = db.resumen_mensual()
     return _fmt_resumen(r, f"Resumen mensual ({r.get('periodo','')})")
+
+
+def _generar_imagen_rendimiento(resumen: dict) -> bytes:
+    """
+    03/08 — Genera una imagen (tarjetas) con el rendimiento diario/semanal/
+    mensual en % sobre el capital de inicio de CADA período — no identifica
+    operaciones individuales, es un resumen visual para descargar.
+    """
+    ahora = datetime.now(db.TZ_ARG)
+    W, H = 1000, 900
+    BG, CARD = (18, 20, 28), (28, 31, 42)
+    VERDE, ROJO, BLANCO, GRIS = (76, 217, 123), (240, 90, 90), (235, 237, 242), (150, 155, 168)
+
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+
+    f_titulo = ImageFont.load_default(size=44)
+    f_fecha = ImageFont.load_default(size=24)
+    f_label = ImageFont.load_default(size=28)
+    f_pct = ImageFont.load_default(size=64)
+    f_usd = ImageFont.load_default(size=26)
+    f_small = ImageFont.load_default(size=20)
+
+    d.text((50, 40), "📊 JJ Cripto Bot", font=f_titulo, fill=BLANCO)
+    d.text((50, 100), ahora.strftime("%A %d/%m/%Y, %H:%M") + " (ARG)", font=f_fecha, fill=GRIS)
+
+    labels = {"diario": "DIARIO (hoy)", "semanal": "SEMANAL (desde el lunes)", "mensual": "MENSUAL (desde el día 1)"}
+    y, card_h = 170, 220
+    for clave in ("diario", "semanal", "mensual"):
+        p = resumen[clave]
+        pct = p["resultado_pct"]
+        color = VERDE if (pct or 0) >= 0 else ROJO
+        signo = "+" if (pct or 0) >= 0 else ""
+
+        d.rounded_rectangle([50, y, W - 50, y + card_h - 20], radius=20, fill=CARD)
+        d.text((80, y + 25), labels[clave], font=f_label, fill=GRIS)
+
+        pct_txt = f"{signo}{pct:.2f}%" if pct is not None else "s/d"
+        d.text((80, y + 65), pct_txt, font=f_pct, fill=color)
+
+        usd = p["resultado_usd"]
+        signo_usd = "+" if usd >= 0 else ""
+        d.text((420, y + 95), f"{signo_usd}{usd:.2f} USD", font=f_usd, fill=BLANCO)
+
+        cap = p["capital_inicio"]
+        cap_txt = f"USD {cap:.2f}" if cap is not None else "s/d"
+        d.text((80, y + 150), f"Capital de inicio: {cap_txt}", font=f_small, fill=GRIS)
+        d.text((520, y + 150), f"✅ {p['ganadas']}   ❌ {p['perdidas']}", font=f_small, fill=GRIS)
+
+        y += card_h
+
+    d.text((50, H - 50), "JJ Cripto Bot v16", font=f_small, fill=GRIS)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _cmd_rendimiento() -> str:
+    """
+    03/08 — Manda una imagen descargable con el rendimiento diario/semanal/
+    mensual, cada uno en % sobre el capital REAL de inicio de ese período
+    (no el capital total fijo). Diario: desde hoy 00:00. Semanal: desde el
+    lunes. Mensual: desde el día 1. No detalla operaciones individuales.
+    """
+    resumen = db.resumen_rendimiento()
+    try:
+        imagen = _generar_imagen_rendimiento(resumen)
+    except Exception as e:
+        return f"⚠️ No pude generar la imagen de rendimiento ({e})."
+
+    d_ = resumen["diario"]
+    caption = (
+        f"📊 <b>Rendimiento</b>\n"
+        f"Diario: {d_['resultado_pct']:+.2f}%" if d_["resultado_pct"] is not None else "📊 <b>Rendimiento</b>"
+    )
+    resultado = enviar_imagen(imagen, "rendimiento.png", caption=caption)
+    if not resultado or not resultado.get("ok"):
+        return "⚠️ Falló el envío de la imagen a Telegram — revisá los logs de Railway."
+    return ""  # ya se mandó la imagen, no hace falta texto adicional
 
 
 def _cmd_historial() -> str:
@@ -496,6 +595,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_semanal()
     elif cmd == "/mensual":
         return _cmd_mensual()
+    elif cmd == "/rendimiento":
+        return _cmd_rendimiento()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -534,6 +635,9 @@ def procesar_comando(texto: str) -> str:
             "  Resumen de los últimos 7 días.\n\n"
             "/mensual\n"
             "  Resumen de los últimos 30 días.\n\n"
+            "/rendimiento\n"
+            "  📊 Imagen descargable: % diario/semanal/mensual sobre el\n"
+            "  capital de inicio de cada período (sin detalle por operación).\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

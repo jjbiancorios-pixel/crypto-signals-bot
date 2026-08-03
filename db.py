@@ -1187,6 +1187,85 @@ def descontar_reserva_diaria(monto: float):
     conn.close()
 
 
+def capital_inicio_periodo(fecha_desde: str):
+    """
+    03/08 — Capital de referencia al INICIO de un período (para calcular
+    rendimiento %). Busca el registro de capital_diario de esa fecha
+    exacta; si no existe (ej. el bot no estaba corriendo interés
+    compuesto todavía ese día), usa el primero disponible DESPUÉS de esa
+    fecha, como mejor aproximación posible.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT capital_dia FROM capital_diario WHERE fecha = ?", (fecha_desde,))
+    row = cur.fetchone()
+    if row:
+        conn.close()
+        return row["capital_dia"]
+    cur.execute("""
+        SELECT capital_dia FROM capital_diario WHERE fecha >= ? ORDER BY fecha ASC LIMIT 1
+    """, (fecha_desde,))
+    row = cur.fetchone()
+    conn.close()
+    return row["capital_dia"] if row else None
+
+
+def resultado_usd_desde(fecha_desde: str) -> dict:
+    """
+    03/08 — Resultado en USD (y conteo de ganadas/perdidas) de todas las
+    operaciones cerradas desde una fecha en adelante (inclusive).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT resultado_pct, capital_asignado FROM senales
+        WHERE fecha >= ? AND cerrado = 1
+    """, (fecha_desde,))
+    filas = cur.fetchall()
+    conn.close()
+    total_usd = 0.0
+    ganadas = 0
+    perdidas = 0
+    for f in filas:
+        if f["resultado_pct"] is None or f["capital_asignado"] is None:
+            continue
+        usd = f["resultado_pct"] * f["capital_asignado"] / 100
+        total_usd += usd
+        if f["resultado_pct"] > 0:
+            ganadas += 1
+        elif f["resultado_pct"] < 0:
+            perdidas += 1
+    return {"total_usd": round(total_usd, 2), "ganadas": ganadas, "perdidas": perdidas, "total_ops": len(filas)}
+
+
+def resumen_rendimiento() -> dict:
+    """
+    03/08 — Arma el resumen de rendimiento diario/semanal/mensual, cada uno
+    en % sobre el capital REAL de inicio de ESE período (no el total fijo).
+    Diario: desde hoy 00:00. Semanal: desde el lunes de esta semana.
+    Mensual: desde el día 1 de este mes. Todas las fechas en huso ARG.
+    """
+    ahora = datetime.now(TZ_ARG)
+    hoy = ahora.strftime("%Y%m%d")
+    lunes = (ahora - timedelta(days=ahora.weekday())).strftime("%Y%m%d")
+    dia1_mes = ahora.replace(day=1).strftime("%Y%m%d")
+
+    periodos = {}
+    for nombre, fecha_desde in (("diario", hoy), ("semanal", lunes), ("mensual", dia1_mes)):
+        capital_inicio = capital_inicio_periodo(fecha_desde)
+        resultado = resultado_usd_desde(fecha_desde)
+        pct = round((resultado["total_usd"] / capital_inicio) * 100, 2) if capital_inicio else None
+        periodos[nombre] = {
+            "fecha_desde": fecha_desde,
+            "capital_inicio": capital_inicio,
+            "resultado_usd": resultado["total_usd"],
+            "resultado_pct": pct,
+            "ganadas": resultado["ganadas"],
+            "perdidas": resultado["perdidas"],
+        }
+    return periodos
+
+
 
 def ganancia_hoy_pct(capital_total: float) -> float:
     """% de ganancia ya logrado hoy sobre el capital total (para el objetivo del 3%)."""
