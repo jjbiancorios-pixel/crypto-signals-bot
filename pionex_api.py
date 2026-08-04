@@ -239,6 +239,22 @@ def obtener_precio_mercado(par):
     return None
 
 
+def obtener_precio_oro():
+    """
+    04/08 — Precio spot de oro (XAU/USD) vía xaus.com, sin API key. Se usa
+    para el análisis del cinturón PAXG/BTC (señal C: macro-inversa con
+    BTC + análisis propio de oro). Devuelve USD por onza troy, o None si
+    falla la consulta (no asumir $0 — el llamador debe saltear ese ciclo).
+    """
+    try:
+        r = requests.get("https://xaus.com/api/v1/spot?compact=1", timeout=10)
+        data = r.json()
+        precio = data.get("spot_usd_oz")
+        return float(precio) if precio else None
+    except Exception:
+        return None
+
+
 def calcular_zona_riesgo_combinada(bu_order_id: str, capital_asignado: float,
                                     ratio_margen_origen: float, par: str) -> dict:
     """

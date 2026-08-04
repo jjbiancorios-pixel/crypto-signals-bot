@@ -243,6 +243,60 @@ def init_db():
         )
     """)
 
+    # 04/08 — Cinturón separado PAXG/BTC (fondeado directo en BTC). Log de
+    # mercado: una foto de precio+indicadores de PAXG/BTC, BTC/USDT y oro
+    # cada ciclo, SIEMPRE (haya o no señal) — es la base de datos que pidió
+    # Juanjo para buscar parámetros óptimos más adelante, no solo para las
+    # operaciones simuladas.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS paxg_mercado_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            precio_paxgbtc REAL,
+            precio_btc_usdt REAL,
+            precio_oro_usd REAL,
+            rsi_paxgbtc REAL,
+            adx_paxgbtc REAL,
+            plus_di REAL,
+            minus_di REAL,
+            bb_upper REAL,
+            bb_lower REAL,
+            bb_mid REAL,
+            ema9_paxgbtc REAL,
+            ema21_paxgbtc REAL,
+            estado_btc TEXT,
+            rsi_oro REAL,
+            tendencia_oro TEXT
+        )
+    """)
+
+    # 04/08 — Las 24 combinaciones simuladas (3 señales A/B/C x 2 niveles
+    # de riesgo x 4 objetivos de TP), corriendo en paralelo sobre el mismo
+    # precio real de PAXG/BTC, sin capital real, para elegir la mejor
+    # combinación al cabo de los 30 días de prueba.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS paxg_simulaciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            combinacion TEXT NOT NULL,
+            senal_tipo TEXT NOT NULL,
+            riesgo TEXT NOT NULL,
+            apalancamiento INTEGER NOT NULL,
+            tp_objetivo_pct REAL NOT NULL,
+            direccion TEXT NOT NULL,
+            precio_entrada REAL NOT NULL,
+            fecha TEXT NOT NULL,
+            hora_apertura TEXT NOT NULL,
+            cerrada INTEGER DEFAULT 0,
+            resultado_pct REAL,
+            peor_resultado_pct REAL,
+            mejor_resultado_pct REAL,
+            motivo_cierre TEXT,
+            tiempo_min INTEGER,
+            hora_cierre TEXT,
+            creado TEXT NOT NULL
+        )
+    """)
+
     _migrar_columnas_riesgo(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
@@ -1574,3 +1628,163 @@ def resumen_grid_dinamico(desde_fecha: str = None) -> dict:
         "hubiera_ajustado_n": len(hubiera_ajustado),
         "pares_afectados": sorted(set(l["par"] for l in hubiera_ajustado)),
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+# 04/08 — Cinturón PAXG/BTC (separado de v16, fondeado directo en BTC)
+# ══════════════════════════════════════════════════════════════════
+
+def guardar_paxg_mercado_log(datos: dict):
+    """
+    04/08 — Guarda una foto del mercado (PAXG/BTC + BTC/USDT + oro +
+    indicadores). Se llama SIEMPRE, haya o no señal — es la base de datos
+    para buscar parámetros óptimos más adelante.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO paxg_mercado_log
+            (timestamp, precio_paxgbtc, precio_btc_usdt, precio_oro_usd,
+             rsi_paxgbtc, adx_paxgbtc, plus_di, minus_di, bb_upper, bb_lower, bb_mid,
+             ema9_paxgbtc, ema21_paxgbtc, estado_btc, rsi_oro, tendencia_oro)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        datetime.now(TZ_ARG).isoformat(),
+        datos.get("precio_paxgbtc"), datos.get("precio_btc_usdt"), datos.get("precio_oro_usd"),
+        datos.get("rsi_paxgbtc"), datos.get("adx_paxgbtc"), datos.get("plus_di"), datos.get("minus_di"),
+        datos.get("bb_upper"), datos.get("bb_lower"), datos.get("bb_mid"),
+        datos.get("ema9_paxgbtc"), datos.get("ema21_paxgbtc"),
+        datos.get("estado_btc"), datos.get("rsi_oro"), datos.get("tendencia_oro"),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def abrir_paxg_simulacion(combinacion: str, senal_tipo: str, riesgo: str,
+                            apalancamiento: int, tp_objetivo_pct: float,
+                            direccion: str, precio_entrada: float) -> int:
+    """04/08 — Abre una de las 24 combinaciones simuladas."""
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        INSERT INTO paxg_simulaciones
+            (combinacion, senal_tipo, riesgo, apalancamiento, tp_objetivo_pct,
+             direccion, precio_entrada, fecha, hora_apertura, creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (
+        combinacion, senal_tipo, riesgo, apalancamiento, tp_objetivo_pct,
+        direccion, precio_entrada, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), ahora.isoformat(),
+    ))
+    conn.commit()
+    sim_id = cur.lastrowid
+    conn.close()
+    return sim_id
+
+
+def paxg_simulaciones_abiertas() -> list:
+    """04/08 — Todas las combinaciones simuladas todavía sin cerrar."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM paxg_simulaciones WHERE cerrada = 0")
+    filas = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return filas
+
+
+def actualizar_paxg_simulacion(sim_id: int, resultado_actual: float):
+    """04/08 — Actualiza MAE/MFE de una combinación (mismo patrón que el resto del bot)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE paxg_simulaciones
+        SET peor_resultado_pct = CASE WHEN peor_resultado_pct IS NULL OR ? < peor_resultado_pct THEN ? ELSE peor_resultado_pct END,
+            mejor_resultado_pct = CASE WHEN mejor_resultado_pct IS NULL OR ? > mejor_resultado_pct THEN ? ELSE mejor_resultado_pct END
+        WHERE id = ?
+    """, (resultado_actual, resultado_actual, resultado_actual, resultado_actual, sim_id))
+    conn.commit()
+    conn.close()
+
+
+def cerrar_paxg_simulacion(sim_id: int, resultado_pct: float, motivo: str):
+    """04/08 — Cierra una combinación (TP, stop-loss, o cierre forzado por intradía)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT hora_apertura, fecha FROM paxg_simulaciones WHERE id = ?", (sim_id,))
+    row = cur.fetchone()
+    tiempo_min = None
+    if row:
+        try:
+            apertura = datetime.strptime(f"{row['fecha']} {row['hora_apertura']}", "%Y%m%d %H:%M").replace(tzinfo=TZ_ARG)
+            tiempo_min = int((datetime.now(TZ_ARG) - apertura).total_seconds() / 60)
+        except Exception:
+            pass
+    cur.execute("""
+        UPDATE paxg_simulaciones
+        SET cerrada = 1, resultado_pct = ?, motivo_cierre = ?, tiempo_min = ?, hora_cierre = ?
+        WHERE id = ?
+    """, (resultado_pct, motivo, tiempo_min, datetime.now(TZ_ARG).strftime("%H:%M"), sim_id))
+    conn.commit()
+    conn.close()
+
+
+def paxg_hay_combos_abiertas_de(senal_tipo: str) -> bool:
+    """04/08 — Para no reabrir un lote nuevo de una señal mientras el lote anterior sigue corriendo."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM paxg_simulaciones WHERE senal_tipo = ? AND cerrada = 0", (senal_tipo,))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n > 0
+
+
+def resumen_paxg_simulaciones(desde_fecha: str = None) -> list:
+    """
+    04/08 — Resultado agregado por combinación (las 24), para elegir la
+    mejor al cabo de los 30 días: win rate, resultado promedio, MAE/MFE.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT * FROM paxg_simulaciones WHERE cerrada = 1"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return []
+
+    por_combo = {}
+    for f in filas:
+        por_combo.setdefault(f["combinacion"], []).append(f)
+
+    resumen = []
+    for combo, lst in por_combo.items():
+        resultados = [f["resultado_pct"] for f in lst if f["resultado_pct"] is not None]
+        ganadas = [r for r in resultados if r > 0]
+        mae = [f["peor_resultado_pct"] for f in lst if f["peor_resultado_pct"] is not None]
+        resumen.append({
+            "combinacion": combo,
+            "n": len(lst),
+            "win_rate_pct": round(len(ganadas) / len(lst) * 100, 1) if lst else None,
+            "resultado_promedio_pct": round(sum(resultados) / len(resultados), 3) if resultados else None,
+            "mae_promedio": round(sum(mae) / len(mae), 2) if mae else None,
+        })
+    resumen.sort(key=lambda x: (x["resultado_promedio_pct"] is None, -(x["resultado_promedio_pct"] or 0)))
+    return resumen
+
+
+def ultimos_precios_oro(n: int = 20) -> list:
+    """04/08 — Últimos N precios de oro guardados (para armar tendencia propia, sin velas históricas gratis)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT precio_oro_usd FROM paxg_mercado_log
+        WHERE precio_oro_usd IS NOT NULL
+        ORDER BY id DESC LIMIT ?
+    """, (n,))
+    valores = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return valores

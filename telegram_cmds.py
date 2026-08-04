@@ -387,6 +387,31 @@ def _cmd_simuladas() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_paxg() -> str:
+    """
+    04/08 — Resumen del cinturón separado PAXG/BTC (modo sombra, 24
+    combinaciones: 3 señales x 2 riesgos x 4 TP). Sin capital real todavía.
+    """
+    abiertas = db.paxg_simulaciones_abiertas()
+    resumen = db.resumen_paxg_simulaciones()
+    if not resumen and not abiertas:
+        return "🥇 Cinturón PAXG/BTC: sin datos todavía (recién se activó el 04/08)."
+
+    lineas = [f"🥇 <b>Cinturón PAXG/BTC</b> (modo sombra, 30 días de prueba)", f"Combinaciones abiertas ahora: {len(abiertas)}"]
+    if resumen:
+        lineas.append("\n<b>Ranking por combinación</b> (mejor a peor):")
+        for r in resumen[:10]:
+            lineas.append(
+                f"{r['combinacion']}: {r['resultado_promedio_pct']:+.2f}% prom | "
+                f"win {r['win_rate_pct']}% | n={r['n']}"
+            )
+        if len(resumen) > 10:
+            lineas.append(f"... y {len(resumen)-10} combinaciones más.")
+    else:
+        lineas.append("\nTodavía ninguna combinación cerró.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -622,6 +647,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_rendimiento()
     elif cmd == "/simuladas":
         return _cmd_simuladas()
+    elif cmd == "/paxg":
+        return _cmd_paxg()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -666,6 +693,9 @@ def procesar_comando(texto: str) -> str:
             "/simuladas\n"
             "  🧪 Resumen de señales que calificaron pero no consiguieron\n"
             "  lugar real (sin capital) — MAE/MFE/win rate simulado.\n\n"
+            "/paxg\n"
+            "  🥇 Cinturón PAXG/BTC en modo sombra — ranking de las 24\n"
+            "  combinaciones (señal x riesgo x TP) probadas en paralelo.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

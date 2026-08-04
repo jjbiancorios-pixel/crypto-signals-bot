@@ -8,6 +8,7 @@ import os
 import db
 import telegram_cmds
 import gestion_riesgo
+import paxg_bot
 import pionex_api
 
 # ── Automatización (feature flag) ───────────────────────────
@@ -1080,6 +1081,16 @@ def main():
             except Exception as e:
                 print(f"Error monitoreando riesgo: {e}")
         schedule.every(1).minutes.do(_monitorear)  # v16: 30 -> 1 min, para que la reapertura <5min sea realmente inmediata
+
+        # 04/08: cinturón separado PAXG/BTC — modo sombra, 24 combinaciones
+        # simuladas, sin capital real. Cada 15 min (no necesita la misma
+        # frecuencia que v16, y evita saturar la API gratuita de oro).
+        def _paxg_ciclo():
+            try:
+                paxg_bot.analizar_y_simular()
+            except Exception as e:
+                print(f"Error en cinturón PAXG/BTC: {e}")
+        schedule.every(15).minutes.do(_paxg_ciclo)
 
         # 01/08: intento "principal" a las 00:01 ARG (=03:01 UTC, servidor
         # corre en UTC) — normalmente alcanza con este, el de _monitorear()
