@@ -298,11 +298,23 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         # tras el caso real de EGLD (-215.68%, cerró en solo 6hs, algo que
         # ninguna regla basada en tiempo hubiera prevenido).
         capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
+        fallo_stop_loss = None
         try:
             desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, capital_total_real=capital_real_op)
-        except Exception:
+            if desglose is None:
+                fallo_stop_loss = "Pionex respondió con datos incompletos"
+        except Exception as e:
             desglose = None
+            fallo_stop_loss = str(e)
         resultado_actual_sl = desglose["total_pct"] if desglose else None
+
+        # 05/08 (FIX): antes CUALQUIER fallo acá (con o sin excepción) se
+        # perdía en silencio — el stop-loss se salteaba ese ciclo sin
+        # ningún rastro. Caso real: PORTALUSDT pasó -20% sin cerrar y sin
+        # ningún log ni aviso. Ahora se loggea Y se avisa por Telegram.
+        if fallo_stop_loss:
+            print(f"⚠️ ERROR en chequeo de stop-loss de {par}: {fallo_stop_loss}")
+            acciones.append(f"⚠️ {par}: falló el chequeo de stop-loss este ciclo ({fallo_stop_loss}) — REVISAR.")
 
         # 29/07 (modo sombra) — guardar el desglose rejilla vs. tendencia,
         # para comparar más adelante si el grid aporta valor real por

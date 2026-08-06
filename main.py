@@ -839,7 +839,7 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
             enviar_telegram(
                 f"⚠️ <b>BTC en movimiento — {ahora} hs (ARG)</b>\n"
                 f"Movimiento: <b>{btc['mov_pct']:.1f}%</b> en 8h | {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f})\n"
-                f"Buscando pares con movimiento propio. Próximo en 30 min."
+                f"Buscando pares con movimiento propio. Próximo en 15 min."
             )
 
         resultados=[]
@@ -863,7 +863,7 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                     f"📊 <b>Análisis {ahora} hs (ARG)</b>\n"
                     f"BTC: {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f}) | {btc['estado']}\n"
                     f"Objetivo: {obj['total']}% de {OBJETIVO_DIARIO}% | Faltan: {obj['faltan']}%\n"
-                    f"Sin señales ALTA probabilidad. Próximo en 30 min."
+                    f"Sin señales ALTA probabilidad. Próximo en 15 min."
                 )
             return
 

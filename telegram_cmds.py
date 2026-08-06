@@ -399,14 +399,21 @@ def _cmd_paxg() -> str:
 
     lineas = [f"🥇 <b>Cinturón PAXG/BTC</b> (modo sombra, 30 días de prueba)", f"Combinaciones abiertas ahora: {len(abiertas)}"]
     if resumen:
-        lineas.append("\n<b>Ranking por combinación</b> (mejor a peor):")
+        # 05/08: total real de ganadas/perdidas en TODAS las combinaciones,
+        # no solo las que entran en el top 10 del ranking de abajo.
+        total_cerradas = sum(r["n"] for r in resumen)
+        total_ganadas = sum(round(r["n"] * r["win_rate_pct"] / 100) for r in resumen if r["win_rate_pct"] is not None)
+        total_perdidas = total_cerradas - total_ganadas
+        lineas.append(f"\nTotal cerradas (todas las combinaciones): {total_cerradas} | ✅ {total_ganadas}  ❌ {total_perdidas}")
+
+        lineas.append("\n<b>Ranking por combinación</b> (mejor a peor, top 10):")
         for r in resumen[:10]:
             lineas.append(
                 f"{r['combinacion']}: {r['resultado_promedio_pct']:+.2f}% prom | "
                 f"win {r['win_rate_pct']}% | n={r['n']}"
             )
         if len(resumen) > 10:
-            lineas.append(f"... y {len(resumen)-10} combinaciones más.")
+            lineas.append(f"... y {len(resumen)-10} combinaciones más (no se muestran acá, pero SÍ están en el total de arriba).")
     else:
         lineas.append("\nTodavía ninguna combinación cerró.")
     return "\n".join(lineas)
