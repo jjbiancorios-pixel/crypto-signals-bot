@@ -634,7 +634,16 @@ def registrar_señal(par, ganancia):
     db.registrar_ganancia_dia(par, ganancia)  # se mantiene solo por compatibilidad histórica
 
 def obj_diario():
-    capital_total = gestion_riesgo.CAPITAL_TOTAL_USD
+    """
+    05/08 (FIX): usaba gestion_riesgo.CAPITAL_TOTAL_USD (el fijo viejo,
+    782) en vez del capital real del día que ya calcula el interés
+    compuesto — con el capital real más alto, el % salía inflado
+    (confirmado: mostraba 0.62% cuando el real era 0.502%). Ahora usa el
+    capital real de hoy, con el mismo fallback de siempre si todavía no
+    corrió el recálculo diario.
+    """
+    cap_diario = db.obtener_capital_diario()
+    capital_total = cap_diario["capital_dia"] if cap_diario else gestion_riesgo.CAPITAL_TOTAL_USD
     return db.obj_diario_real_db(OBJETIVO_DIARIO, capital_total)
 
 

@@ -857,8 +857,18 @@ def borrar_operacion_abierta(clave: str):
 
 
 # ── Resúmenes de rendimiento (diario/semanal/mensual) ───────
-def _calcular_resumen(rows: list) -> dict:
-    """Calcula métricas comunes dado una lista de filas de senales."""
+def _calcular_resumen(rows: list, capital_periodo: float = None) -> dict:
+    """
+    Calcula métricas comunes dado una lista de filas de senales.
+
+    05/08 (FIX): "gan_total" antes sumaba directo resultado_pct de cada
+    operación — pero cada resultado_pct ya es % relativo al capital de ESA
+    operación puntual, no al capital total. Sumarlos no daba un % real de
+    cartera. Ahora, si se pasa capital_periodo (el capital real de inicio
+    del período, mismo dato que usa /rendimiento), se calcula bien: USD
+    total del período / capital real. Si no se pasa (fallback, por si
+    todavía no hay capital_diario disponible), usa el cálculo viejo.
+    """
     if not rows:
         return {"n": 0, "n_pos": 0, "n_neg": 0, "n_abiertas": 0,
                 "gan_total": 0, "gan_prom": 0, "win_rate": 0,
@@ -870,15 +880,23 @@ def _calcular_resumen(rows: list) -> dict:
     negativas = [r for r in cerradas if r["resultado_pct"] <= 0]
 
     # Con estancadas (todas las cerradas)
-    gan_total = sum(r["resultado_pct"] for r in cerradas)
-    gan_prom = gan_total / len(cerradas) if cerradas else 0
+    gan_prom = sum(r["resultado_pct"] for r in cerradas) / len(cerradas) if cerradas else 0
     win_rate = len(positivas) / len(cerradas) * 100 if cerradas else 0
 
     # Sin estancadas (solo las que cerraron en <= 12 horas, el umbral confirmado)
     rapidas = [r for r in cerradas if r["tiempo_real_min"] is not None and r["tiempo_real_min"] <= 720]
-    gan_total_sin = sum(r["resultado_pct"] for r in rapidas)
-    gan_prom_sin = gan_total_sin / len(rapidas) if rapidas else 0
+    gan_prom_sin = sum(r["resultado_pct"] for r in rapidas) / len(rapidas) if rapidas else 0
     win_rate_sin = sum(1 for r in rapidas if r["resultado_pct"] > 0) / len(rapidas) * 100 if rapidas else 0
+
+    if capital_periodo:
+        gan_total_usd = sum(r["resultado_pct"] * (r.get("capital_asignado") or 0) / 100 for r in cerradas)
+        gan_total = round(gan_total_usd / capital_periodo * 100, 2)
+        gan_total_sin_usd = sum(r["resultado_pct"] * (r.get("capital_asignado") or 0) / 100 for r in rapidas)
+        gan_total_sin = round(gan_total_sin_usd / capital_periodo * 100, 2)
+    else:
+        # Fallback (comportamiento viejo) — solo si no hay capital real disponible
+        gan_total = round(sum(r["resultado_pct"] for r in cerradas), 2)
+        gan_total_sin = round(sum(r["resultado_pct"] for r in rapidas), 2)
 
     return {
         "n": len(cerradas),
@@ -886,10 +904,10 @@ def _calcular_resumen(rows: list) -> dict:
         "n_neg": len(negativas),
         "n_abiertas": len(abiertas),
         "n_rapidas": len(rapidas),
-        "gan_total": round(gan_total, 2),
+        "gan_total": gan_total,
         "gan_prom": round(gan_prom, 2),
         "win_rate": round(win_rate, 1),
-        "gan_total_sin": round(gan_total_sin, 2),
+        "gan_total_sin": gan_total_sin,
         "gan_prom_sin": round(gan_prom_sin, 2),
         "win_rate_sin": round(win_rate_sin, 1),
         "mejor": round(max((r["resultado_pct"] for r in cerradas), default=0), 2),
@@ -906,7 +924,8 @@ def resumen_diario(fecha: str = None) -> dict:
     cur.execute("SELECT * FROM senales WHERE fecha = ?", (fecha,))
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
-    resultado = _calcular_resumen(rows)
+    capital_periodo = capital_inicio_periodo(fecha)
+    resultado = _calcular_resumen(rows, capital_periodo)
     resultado["fecha"] = fecha
     return resultado
 
@@ -919,7 +938,8 @@ def resumen_semanal() -> dict:
     cur.execute("SELECT * FROM senales WHERE fecha >= ?", (desde,))
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
-    resultado = _calcular_resumen(rows)
+    capital_periodo = capital_inicio_periodo(desde)
+    resultado = _calcular_resumen(rows, capital_periodo)
     resultado["periodo"] = f"{desde} → hoy"
     return resultado
 
@@ -932,7 +952,8 @@ def resumen_mensual() -> dict:
     cur.execute("SELECT * FROM senales WHERE fecha >= ?", (desde,))
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
-    resultado = _calcular_resumen(rows)
+    capital_periodo = capital_inicio_periodo(desde)
+    resultado = _calcular_resumen(rows, capital_periodo)
     resultado["periodo"] = f"{desde} → hoy"
     return resultado
 
