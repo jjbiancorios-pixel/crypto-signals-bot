@@ -9,6 +9,7 @@ import db
 import telegram_cmds
 import gestion_riesgo
 import paxg_bot
+import bingx_bot
 import pionex_api
 
 # ── Automatización (feature flag) ───────────────────────────
@@ -1100,6 +1101,17 @@ def main():
             except Exception as e:
                 print(f"Error en cinturón PAXG/BTC: {e}")
         schedule.every(15).minutes.do(_paxg_ciclo)
+
+        # 05/08: cinturón de INVESTIGACIÓN BingX — modo sombra puro, sin
+        # operar nada, sin API key. Cada 30 seg (el mínimo que da el loop
+        # principal, que duerme 30 seg entre chequeos) para tener
+        # suficiente densidad de datos en la ventana de 1-5 min.
+        def _bingx_ciclo():
+            try:
+                bingx_bot.recopilar_datos()
+            except Exception as e:
+                print(f"Error en cinturón de investigación BingX: {e}")
+        schedule.every(30).seconds.do(_bingx_ciclo)
 
         # 01/08: intento "principal" a las 00:01 ARG (=03:01 UTC, servidor
         # corre en UTC) — normalmente alcanza con este, el de _monitorear()

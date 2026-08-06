@@ -419,6 +419,30 @@ def _cmd_paxg() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_bingx() -> str:
+    """
+    05/08 — Resumen del cinturón de INVESTIGACIÓN BingX (order book
+    imbalance). Muestra el % de acierto real por umbral, calculado con
+    datos propios — para elegir el umbral óptimo, no a ciegas. Modo
+    sombra puro, sin operar nada.
+    """
+    resumen = db.resumen_umbral_imbalance()
+    if not resumen or all(r["n_1m"] == 0 for r in resumen):
+        return "📡 Cinturón BingX (investigación): sin datos suficientes todavía."
+
+    lineas = ["📡 <b>Cinturón BingX — Order Book Imbalance</b> (investigación, modo sombra)",
+              "Acierto real por umbral (dirección predicha vs. lo que hizo el precio):\n"]
+    for r in resumen:
+        if r["n_1m"] == 0:
+            continue
+        linea = f"Umbral {r['umbral']}: 1min {r['acierto_1m_pct']}% (n={r['n_1m']})"
+        if r["n_5m"]:
+            linea += f" | 5min {r['acierto_5m_pct']}% (n={r['n_5m']})"
+        lineas.append(linea)
+    lineas.append("\n⚠️ Con muestra chica (n bajo) el número no es confiable todavía — cuanto más alto el umbral, menos casos, ojo con sobre-interpretar.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -656,6 +680,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_simuladas()
     elif cmd == "/paxg":
         return _cmd_paxg()
+    elif cmd == "/bingx":
+        return _cmd_bingx()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -703,6 +729,9 @@ def procesar_comando(texto: str) -> str:
             "/paxg\n"
             "  🥇 Cinturón PAXG/BTC en modo sombra — ranking de las 24\n"
             "  combinaciones (señal x riesgo x TP) probadas en paralelo.\n\n"
+            "/bingx\n"
+            "  📡 Cinturón de investigación BingX (order book imbalance) —\n"
+            "  % de acierto real por umbral, sin operar nada todavía.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

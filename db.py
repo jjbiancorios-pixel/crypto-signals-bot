@@ -297,6 +297,26 @@ def init_db():
         )
     """)
 
+    # 05/08 — Cinturón BingX (investigación, modo sombra puro, SIN operar
+    # todavía): recolecta order book imbalance + indicadores de velas
+    # cortas (1-5 min) + qué hizo el precio DESPUÉS, para poder calibrar
+    # con datos propios qué umbral de desequilibrio predice mejor —
+    # ninguna decisión de trading todavía, solo el dataset.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bingx_datos_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            precio REAL,
+            imbalance REAL,
+            rsi_1m REAL,
+            rsi_5m REAL,
+            vwap_1m REAL,
+            precio_1min_despues REAL,
+            precio_5min_despues REAL
+        )
+    """)
+
     _migrar_columnas_riesgo(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
@@ -1809,3 +1829,100 @@ def ultimos_precios_oro(n: int = 20) -> list:
     valores = [r[0] for r in cur.fetchall()]
     conn.close()
     return valores
+
+
+# ══════════════════════════════════════════════════════════════════
+# 05/08 — Cinturón BingX (investigación pura, modo sombra — sin operar)
+# ══════════════════════════════════════════════════════════════════
+
+def guardar_bingx_dato(datos: dict) -> int:
+    """Guarda un snapshot (imbalance + indicadores + precio). Devuelve el id."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO bingx_datos_log (timestamp, symbol, precio, imbalance, rsi_1m, rsi_5m, vwap_1m)
+        VALUES (?,?,?,?,?,?,?)
+    """, (
+        datetime.now(TZ_ARG).isoformat(), datos.get("symbol", "BTC-USDT"), datos.get("precio"),
+        datos.get("imbalance"), datos.get("rsi_1m"), datos.get("rsi_5m"), datos.get("vwap_1m"),
+    ))
+    conn.commit()
+    row_id = cur.lastrowid
+    conn.close()
+    return row_id
+
+
+def completar_resultados_bingx(precio_actual: float, symbol: str = "BTC-USDT"):
+    """
+    05/08 — Completa "qué hizo el precio después" para filas viejas que
+    todavía no lo tienen. Se llama cada ciclo con el precio actual: busca
+    filas de hace ~1 min sin precio_1min_despues, y de hace ~5 min sin
+    precio_5min_despues, y las completa con el precio de AHORA. Usa un
+    margen de tolerancia de 30 seg (no hace falta el segundo exacto).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    v_1min_desde = (ahora - timedelta(seconds=75)).isoformat()
+    v_1min_hasta = (ahora - timedelta(seconds=45)).isoformat()
+    v_5min_desde = (ahora - timedelta(seconds=330)).isoformat()
+    v_5min_hasta = (ahora - timedelta(seconds=270)).isoformat()
+
+    cur.execute("""
+        UPDATE bingx_datos_log SET precio_1min_despues = ?
+        WHERE symbol = ? AND precio_1min_despues IS NULL AND timestamp BETWEEN ? AND ?
+    """, (precio_actual, symbol, v_1min_desde, v_1min_hasta))
+    cur.execute("""
+        UPDATE bingx_datos_log SET precio_5min_despues = ?
+        WHERE symbol = ? AND precio_5min_despues IS NULL AND timestamp BETWEEN ? AND ?
+    """, (precio_actual, symbol, v_5min_desde, v_5min_hasta))
+    conn.commit()
+    conn.close()
+
+
+def resumen_umbral_imbalance(desde_fecha: str = None) -> list:
+    """
+    05/08 — Para distintos umbrales de |imbalance|, calcula qué % de las
+    veces el precio se movió en la dirección "predicha" por el
+    desequilibrio (positivo -> predice suba, negativo -> predice baja),
+    a 1 y a 5 minutos. Es la base para elegir el umbral óptimo con datos
+    reales — no a ciegas ni con un número fijo de entrada.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT imbalance, precio, precio_1min_despues, precio_5min_despues
+        FROM bingx_datos_log WHERE imbalance IS NOT NULL
+    """)
+    filas = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return []
+
+    umbrales = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    resumen = []
+    for u in umbrales:
+        aciertos_1m = total_1m = aciertos_5m = total_5m = 0
+        for f in filas:
+            imb = f["imbalance"]
+            if imb is None or abs(imb) < u:
+                continue
+            prediccion = 1 if imb > 0 else -1
+            if f["precio_1min_despues"] is not None:
+                total_1m += 1
+                mov = f["precio_1min_despues"] - f["precio"]
+                if (mov > 0 and prediccion == 1) or (mov < 0 and prediccion == -1):
+                    aciertos_1m += 1
+            if f["precio_5min_despues"] is not None:
+                total_5m += 1
+                mov = f["precio_5min_despues"] - f["precio"]
+                if (mov > 0 and prediccion == 1) or (mov < 0 and prediccion == -1):
+                    aciertos_5m += 1
+        resumen.append({
+            "umbral": u,
+            "n_1m": total_1m,
+            "acierto_1m_pct": round(aciertos_1m / total_1m * 100, 1) if total_1m else None,
+            "n_5m": total_5m,
+            "acierto_5m_pct": round(aciertos_5m / total_5m * 100, 1) if total_5m else None,
+        })
+    return resumen
