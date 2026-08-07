@@ -45,9 +45,11 @@ def obtener_order_book(symbol: str = SYMBOL, limit: int = 20):
         data = r.json()
         d = data.get("data", {})
         if not d.get("bids") or not d.get("asks"):
+            print(f"⚠️ BingX order book: respuesta sin bids/asks (status {r.status_code}): {str(data)[:200]}")
             return None
         return d
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ BingX order book: error de conexión/parseo — {e}")
         return None
 
 
@@ -85,7 +87,8 @@ def get_velas(symbol: str = SYMBOL, interval: str = "1m", limit: int = 50):
             if c in df.columns:
                 df[c] = df[c].astype(float)
         return df
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ BingX velas ({interval}): error de conexión/parseo — {e}")
         return None
 
 
@@ -127,16 +130,24 @@ def recopilar_datos():
     """
     ob = obtener_order_book()
     if ob is None:
-        return  # falla silenciosa esperada si el endpoint no es el correcto — revisar PATH_DEPTH
+        # 05/08 (FIX): antes esto se perdía en silencio (mismo error que
+        # ya corregimos hoy en el stop-loss) — ahora se loggea, para poder
+        # diagnosticar si PATH_DEPTH está mal en vez de quedarnos sin
+        # saber por qué /bingx no muestra datos.
+        print("⚠️ BingX: no se pudo obtener el order book — revisar PATH_DEPTH en bingx_bot.py.")
+        return
 
     precio_actual = get_precio()
     if precio_actual is None:
+        print("⚠️ BingX: no se pudo calcular el precio actual a partir del order book.")
         return
 
     imbalance = calcular_imbalance(ob)
 
     df_1m = get_velas(interval="1m", limit=30)
     df_5m = get_velas(interval="5m", limit=30)
+    if df_1m is None or df_5m is None:
+        print("⚠️ BingX: no se pudieron obtener las velas (1m/5m) — revisar PATH_KLINES en bingx_bot.py. Se guarda igual el imbalance, sin RSI.")
     rsi_1m = calc_rsi(df_1m["close"]) if df_1m is not None else None
     rsi_5m = calc_rsi(df_5m["close"]) if df_5m is not None else None
     vwap_1m = calc_vwap(df_1m) if df_1m is not None else None
