@@ -83,7 +83,7 @@ def get_velas(symbol: str = SYMBOL, interval: str = "1m", limit: int = 50):
         cols_map = {0: "open_time", 1: "open", 2: "high", 3: "low", 4: "close", 5: "volume"}
         if isinstance(data[0], list):
             df = df.rename(columns=cols_map)
-        for c in ["open", "high", "low", "close"]:
+        for c in ["open", "high", "low", "close", "volume"]:
             if c in df.columns:
                 df[c] = df[c].astype(float)
         return df
