@@ -479,23 +479,19 @@ def cerrar_grilla_futuros(bu_order_id: str, nota: str = "Cierre automático") ->
     return resp.json()
 
 
-def calcular_resultado_actual(bu_order_id: str, capital_total_real: float = None):
+def calcular_resultado_actual(bu_order_id: str, par: str = None, capital_total_real: float = None):
     """
     Calcula el % de resultado REAL en este momento para una operación
-    todavía ABIERTA (misma fórmula confirmada con datos reales: 12/07):
-    Ganancia% = (marginBalance - init_investment) / quoteInvestment * 100.
-    Ahora solo INFORMATIVO — ya no dispara ningún cierre automático (ver
-    gestion_riesgo.py, decisión 28/07: solo se cierra al 1.35% real de TP).
+    todavía ABIERTA. Ahora solo INFORMATIVO — ya no dispara ningún cierre
+    automático (ver gestion_riesgo.py: el stop-loss usa
+    calcular_resultado_desglosado, esta función queda para el aviso de 10hs).
 
-    FIX CRÍTICO 28/07: initUsdtInvestment es un campo que Pionex graba UNA
-    VEZ al crear la operación y NUNCA actualiza si agregás capital manual
-    después (caso real: MOVE, 27/07 — se agregó capital, initUsdtInvestment
-    quedó congelado en 60, y la fórmula contó TODO el capital agregado como
-    si fuera ganancia: dio +45.18% cuando el resultado real rondaba -3%).
-    Ahora, si se pasa capital_total_real (el capital_asignado que tenemos
-    en NUESTRA base, que sí se actualiza con /corregir), se usa ESE en vez
-    del initUsdtInvestment de Pionex — evita el mismo bug en cualquier
-    operación editada manualmente.
+    07/08 — FIX CRÍTICO (mismo que calcular_resultado_desglosado): a la
+    fórmula le faltaba sumar la ganancia/pérdida NO REALIZADA de la
+    posición ya comprada por el grid — ver docstring de
+    calcular_resultado_desglosado para el caso real (INJUSDT, -8.79% vs.
+    -22.05% real). Ahora recibe también `par` para poder consultar el
+    precio de mercado real.
     """
     data = consultar_orden(bu_order_id).get("data", {}) or {}
     bod = data.get("buOrderData", {}) or {}
@@ -508,22 +504,41 @@ def calcular_resultado_actual(bu_order_id: str, capital_total_real: float = None
         quote_investment = float(bod.get("quoteInvestment") or bod.get("initQuoteInvestment") or 0)
         if quote_investment <= 0:
             return None
-        return round((margin_balance - init_investment) / quote_investment * 100, 4)
+
+        no_realizado_usd = 0.0
+        base_amount = float(bod.get("baseAmount", 0) or 0)
+        position_open_price = float(bod.get("positionOpenPrice", 0) or 0)
+        if base_amount > 0 and position_open_price > 0 and par:
+            precio_actual = obtener_precio_mercado(par)
+            if precio_actual is not None:
+                es_corto = bod.get("trend") == "short"
+                if es_corto:
+                    no_realizado_usd = base_amount * (position_open_price - precio_actual)
+                else:
+                    no_realizado_usd = base_amount * (precio_actual - position_open_price)
+
+        return round(((margin_balance - init_investment) + no_realizado_usd) / quote_investment * 100, 4)
     except (ValueError, TypeError):
         return None
 
 
-def calcular_resultado_desglosado(bu_order_id: str, capital_total_real: float = None):
+def calcular_resultado_desglosado(bu_order_id: str, par: str = None, capital_total_real: float = None):
     """
-    29/07 — Igual que calcular_resultado_actual, pero además separa cuánto
-    del resultado viene de la GRILLA (oscilación, gridProfit de Pionex) vs.
-    de la TENDENCIA (movimiento direccional del precio) — mismos dos
-    componentes que la app de Pionex muestra por separado ("Ganancia de
-    rejilla" / "PnL tend."). Sirve para comparar si el grid realmente
-    aporta valor por sobre una posición direccional simple, o si casi todo
-    el resultado viene de la dirección (caso real observado: AAVE y HBAR,
-    donde la rejilla aportó +0.08/+0.16% y la tendencia el resto).
+    Igual que calcular_resultado_actual, pero además separa cuánto del
+    resultado viene de la GRILLA (oscilación, gridProfit de Pionex) vs.
+    de la TENDENCIA (movimiento direccional del precio).
     Devuelve {"total_pct", "rejilla_pct", "tendencia_pct"} o None si falla.
+
+    07/08 — FIX CRÍTICO: la fórmula anterior (marginBalance - inversión
+    inicial) le faltaba sumar la ganancia/pérdida NO REALIZADA de la
+    posición que el grid ya compró/vendió — cuánto vale ahora comparado
+    contra el precio promedio de entrada. Caso real INJUSDT: la fórmula
+    vieja daba -8.79% cuando el real (confirmado con /debug_orden y la
+    app) era -22.05% — el stop-loss no tenía forma de dispararse a
+    tiempo, ya había pasado -20% real sin que el bot lo detectara. Ahora
+    suma baseAmount * (precio_actual - positionOpenPrice) para LARGO
+    (invertido para CORTO) — requiere el precio de mercado real, por eso
+    la función ahora recibe también `par`.
     """
     data = consultar_orden(bu_order_id).get("data", {}) or {}
     bod = data.get("buOrderData", {}) or {}
@@ -533,7 +548,20 @@ def calcular_resultado_desglosado(bu_order_id: str, capital_total_real: float = 
         quote_investment = float(bod.get("quoteInvestment") or bod.get("initQuoteInvestment") or 0)
         if quote_investment <= 0:
             return None
-        total_pct = round((margin_balance - init_investment) / quote_investment * 100, 4)
+
+        no_realizado_usd = 0.0
+        base_amount = float(bod.get("baseAmount", 0) or 0)
+        position_open_price = float(bod.get("positionOpenPrice", 0) or 0)
+        if base_amount > 0 and position_open_price > 0 and par:
+            precio_actual = obtener_precio_mercado(par)
+            if precio_actual is not None:
+                es_corto = bod.get("trend") == "short"
+                if es_corto:
+                    no_realizado_usd = base_amount * (position_open_price - precio_actual)
+                else:
+                    no_realizado_usd = base_amount * (precio_actual - position_open_price)
+
+        total_pct = round(((margin_balance - init_investment) + no_realizado_usd) / quote_investment * 100, 4)
         grid_profit_usd = float(bod.get("gridProfit", 0) or 0)
         rejilla_pct = round(grid_profit_usd / quote_investment * 100, 4)
         tendencia_pct = round(total_pct - rejilla_pct, 4)

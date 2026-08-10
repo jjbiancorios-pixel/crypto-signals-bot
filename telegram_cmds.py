@@ -266,7 +266,14 @@ def _cmd_diario(args: list) -> str:
     hoy = datetime.now(TZ_ARG).strftime("%Y%m%d")
     if fecha == hoy:
         import gestion_riesgo
-        obj = db.obj_diario_real_db(gestion_riesgo.OBJETIVO_DIARIO_PCT, gestion_riesgo.CAPITAL_TOTAL_USD)
+        # 07/08 (FIX): esto llamaba a db.obj_diario_real_db() directo con
+        # gestion_riesgo.CAPITAL_TOTAL_USD (el fijo viejo, 782) — un camino
+        # de código duplicado que quedó sin el fix que sí se aplicó en
+        # main.py:obj_diario(). Ahora usa la misma lógica correcta: capital
+        # real del día si ya está disponible, con el mismo fallback.
+        cap_diario = db.obtener_capital_diario()
+        capital_hoy = cap_diario["capital_dia"] if cap_diario else gestion_riesgo.CAPITAL_TOTAL_USD
+        obj = db.obj_diario_real_db(gestion_riesgo.OBJETIVO_DIARIO_PCT, capital_hoy)
         resumen += (
             f"\n\n🎯 <b>Objetivo diario:</b> {obj['total']}% de "
             f"{gestion_riesgo.OBJETIVO_DIARIO_PCT}% | Faltan: {obj['faltan']}%"
@@ -440,6 +447,80 @@ def _cmd_bingx() -> str:
             linea += f" | 5min {r['acierto_5m_pct']}% (n={r['n_5m']})"
         lineas.append(linea)
     lineas.append("\n⚠️ Con muestra chica (n bajo) el número no es confiable todavía — cuanto más alto el umbral, menos casos, ojo con sobre-interpretar.")
+    return "\n".join(lineas)
+
+
+def _cmd_filtros() -> str:
+    """
+    07/08 — Resumen de los 6 filtros en modo sombra (multi-tf, ADX,
+    volumen, VWAP, CCI, OBV): cuántas señales aprobó/rechazó cada uno, y
+    el resultado promedio real de las señales que cerraron, separado por
+    aprobó=Sí vs. aprobó=No.
+    """
+    r = db.resumen_sombra()
+    if r.get("total", 0) == 0:
+        return "🔬 Filtros en sombra: sin datos suficientes todavía."
+
+    lineas = [f"🔬 <b>Filtros en sombra</b> — {r['total']} señales registradas\n"]
+    for filtro in ("multi_tf", "adx_gate", "volumen", "vwap", "cci", "obv"):
+        d = r.get(filtro, {})
+        ap, re = d.get("aprobo", {}), d.get("rechazo", {})
+        lineas.append(
+            f"<b>{filtro}</b>: aprobó {ap.get('n_total',0)} (prom {ap.get('prom')}%, n con resultado={ap.get('n_con_resultado',0)}) | "
+            f"rechazó {re.get('n_total',0)} (prom {re.get('prom')}%, n con resultado={re.get('n_con_resultado',0)})"
+        )
+    return "\n".join(lineas)
+
+
+def _cmd_griddinamico() -> str:
+    """07/08 — Resumen del grid dinámico en modo sombra (regla DGT, rebote confirmado)."""
+    r = db.resumen_grid_dinamico()
+    if r.get("total", 0) == 0:
+        return "📐 Grid dinámico: sin datos suficientes todavía."
+    return (
+        f"📐 <b>Grid dinámico</b> (modo sombra)\n"
+        f"Chequeos totales: {r['total_chequeos']}\n"
+        f"Cerca del borde: {r['cerca_del_borde_n']}\n"
+        f"Con rebote confirmado: {r['rebote_confirmado_n']}\n"
+        f"Hubiera ajustado: {r['hubiera_ajustado_n']}\n"
+        f"Pares afectados: {', '.join(r['pares_afectados']) if r['pares_afectados'] else '—'}"
+    )
+
+
+def _cmd_mae() -> str:
+    """
+    07/08 — Resumen de MAE/MFE + motivo de cierre, todo junto (para no
+    tener que correr 3 comandos separados). Incluye aviso sobre el fix
+    del 07/08 (datos de antes de esa fecha pueden estar subestimados).
+    """
+    mae = db.resumen_mae()
+    mfe = db.resumen_mfe()
+    motivos = db.resumen_por_motivo_cierre()
+
+    if mae.get("total", 0) == 0 and mfe.get("total", 0) == 0:
+        return "📉 MAE/MFE: sin datos suficientes todavía."
+
+    lineas = ["📉 <b>MAE / MFE / motivo de cierre</b>\n"]
+    if mae.get("total"):
+        lineas.append(
+            f"<b>MAE</b> (peor punto alcanzado) — {mae['total_con_dato']} operaciones con dato "
+            f"({'✅ confiable' if mae['confiable'] else '⚠️ muestra chica, no confiable todavía'})\n"
+            f"Ganadoras: peor caso {mae['mae_ganadoras_peor']}%, promedio {mae['mae_ganadoras_promedio']}%\n"
+            f"Perdedoras: promedio {mae['mae_perdedoras_promedio']}%"
+        )
+    if mfe.get("total"):
+        lineas.append(
+            f"\n<b>MFE</b> (mejor punto alcanzado) — {mfe['total_con_dato']} operaciones "
+            f"({'✅ confiable' if mfe['confiable'] else '⚠️ muestra chica'})\n"
+            f"Eficiencia de captura promedio: {mfe['eficiencia_captura_promedio']}\n"
+            f"Casi llegaron al TP y terminaron perdiendo: {mfe['n_casi_tp_pero_termino_perdiendo']}"
+        )
+    if motivos:
+        lineas.append("\n<b>Por motivo de cierre:</b>")
+        for motivo, d in motivos.items():
+            lineas.append(f"  {motivo}: n={d['n']} | tiempo prom {d['tiempo_prom_min']}min | resultado prom {d['resultado_prom_pct']}%")
+
+    lineas.append("\n⚠️ Datos de ANTES del 07/08 pueden estar subestimados en operaciones con posición grande acumulada (ver fix crítico de fórmula).")
     return "\n".join(lineas)
 
 
@@ -682,6 +763,12 @@ def procesar_comando(texto: str) -> str:
         return _cmd_paxg()
     elif cmd == "/bingx":
         return _cmd_bingx()
+    elif cmd == "/filtros":
+        return _cmd_filtros()
+    elif cmd == "/griddinamico":
+        return _cmd_griddinamico()
+    elif cmd == "/mae":
+        return _cmd_mae()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -732,6 +819,13 @@ def procesar_comando(texto: str) -> str:
             "/bingx\n"
             "  📡 Cinturón de investigación BingX (order book imbalance) —\n"
             "  % de acierto real por umbral, sin operar nada todavía.\n\n"
+            "/filtros\n"
+            "  🔬 Resumen de los 6 filtros en modo sombra (multi-tf, ADX,\n"
+            "  volumen, VWAP, CCI, OBV) — aprobó/rechazó y resultado real.\n\n"
+            "/griddinamico\n"
+            "  📐 Resumen del grid dinámico en modo sombra (regla DGT).\n\n"
+            "/mae\n"
+            "  📉 MAE/MFE + motivo de cierre, todo junto.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

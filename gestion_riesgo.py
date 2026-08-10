@@ -300,7 +300,7 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
         fallo_stop_loss = None
         try:
-            desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, capital_total_real=capital_real_op)
+            desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, par=par, capital_total_real=capital_real_op)
             if desglose is None:
                 fallo_stop_loss = "Pionex respondió con datos incompletos"
         except Exception as e:
@@ -357,7 +357,7 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
 
         if horas_abierta is not None and horas_abierta >= HORAS_CIERRE_AUTOMATICO and not op.get("aviso_10hs_enviado"):
             capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
-            resultado_actual = pionex_api.calcular_resultado_actual(bu_order_id, capital_total_real=capital_real_op)
+            resultado_actual = pionex_api.calcular_resultado_actual(bu_order_id, par=par, capital_total_real=capital_real_op)
             db.marcar_aviso_10hs_enviado(senal_id)
             if resultado_actual is not None:
                 acciones.append(
