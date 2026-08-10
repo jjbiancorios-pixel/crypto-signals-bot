@@ -22,6 +22,7 @@ import circular, mismo patrón que paxg_bot.py y pionex_api.py.
 import requests
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta
 
 import db
 
@@ -159,3 +160,101 @@ def recopilar_datos():
 
     # Completar "qué pasó después" de snapshots de hace ~1 y ~5 minutos
     db.completar_resultados_bingx(precio_actual, symbol=SYMBOL)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 10/08 — Cinturón BingX-martingala (modo sombra puro, sin capital real)
+# ══════════════════════════════════════════════════════════════════
+# Variante A: la dirección de CADA trade (incluida la operación 1) se
+# define con el order book imbalance fresco, umbral 0.6.
+# Variante B: la dirección de la operación 1 también viene del imbalance
+# (mismo umbral) — pero de ahí en más, las operaciones 2-6 siguen el
+# guion FIJO del video (según si la operación 1 fue LONG o SHORT), sin
+# volver a consultar el order book.
+UMBRAL_MARTINGALA = 0.6
+APUESTA_INICIAL = 5.0
+PROFUNDIDAD_MAXIMA = 6
+GUION_LONG = ["LONG", "LONG", "SHORT", "LONG", "SHORT", "LONG"]
+GUION_SHORT = ["SHORT", "SHORT", "LONG", "SHORT", "LONG", "SHORT"]
+
+
+def _direccion_por_imbalance(imbalance: float):
+    """Devuelve 'LONG'/'SHORT' si supera el umbral, o None si no hay señal clara."""
+    if imbalance >= UMBRAL_MARTINGALA:
+        return "LONG"
+    elif imbalance <= -UMBRAL_MARTINGALA:
+        return "SHORT"
+    return None
+
+
+def _evaluar_trade(direccion: str, precio_entrada: float, precio_actual: float) -> bool:
+    """True si el precio se movió a favor de la dirección predicha."""
+    if direccion == "LONG":
+        return precio_actual > precio_entrada
+    return precio_actual < precio_entrada
+
+
+def _intentar_abrir_secuencia(variante: str, imbalance: float, precio_actual: float):
+    """Si no hay secuencia abierta de esta variante y hay señal, abre una nueva."""
+    if db.secuencias_martingala_abiertas(variante):
+        return
+    direccion = _direccion_por_imbalance(imbalance)
+    if direccion:
+        db.abrir_secuencia_martingala(variante, direccion, precio_actual)
+
+
+def _procesar_secuencia(sec: dict, precio_actual: float, imbalance: float):
+    """Evalúa si el trade actual de una secuencia abierta ya cumplió su minuto de espera."""
+    hora_entrada = datetime.strptime(
+        f"{sec['fecha']} {sec['hora_entrada_trade']}", "%Y%m%d %H:%M:%S"
+    ).replace(tzinfo=db.TZ_ARG)
+    segundos_transcurridos = (datetime.now(db.TZ_ARG) - hora_entrada).total_seconds()
+    if segundos_transcurridos < 60:
+        return  # todavía no pasó el minuto de evaluación
+
+    gano = _evaluar_trade(sec["direccion_trade_actual"], sec["precio_entrada_trade"], precio_actual)
+
+    if gano:
+        resultado_neto = sec["apuesta_actual"] - sec["perdido_acumulado"]
+        db.cerrar_secuencia_martingala(sec["id"], round(resultado_neto, 2), motivo="ganada")
+        return
+
+    # Perdió este trade
+    if sec["trade_actual"] >= PROFUNDIDAD_MAXIMA:
+        perdida_total = -(sec["perdido_acumulado"] + sec["apuesta_actual"])
+        db.cerrar_secuencia_martingala(sec["id"], round(perdida_total, 2), motivo="ruina")
+        return
+
+    # Avanza al siguiente trade — dirección según la variante
+    nueva_apuesta = sec["apuesta_actual"] * 2
+    proximo_indice = sec["trade_actual"]  # 0-indexed para el guion (trade_actual pasará a +1)
+    if sec["variante"] == "A":
+        direccion_nueva = _direccion_por_imbalance(imbalance) or sec["direccion_trade_actual"]
+    else:
+        guion = GUION_LONG if sec["direccion_op1"] == "LONG" else GUION_SHORT
+        direccion_nueva = guion[proximo_indice] if proximo_indice < len(guion) else sec["direccion_trade_actual"]
+
+    db.avanzar_trade_martingala(sec["id"], nueva_apuesta, precio_actual, direccion_nueva)
+
+
+def simular_martingala():
+    """
+    Función principal de este cinturón — se llama junto con recopilar_datos()
+    en el mismo ciclo de 30 seg. NO abre ninguna operación real en BingX,
+    todo es simulado con el precio de mercado real.
+    """
+    ob = obtener_order_book()
+    if ob is None:
+        return
+    precio_actual = get_precio()
+    if precio_actual is None:
+        return
+    imbalance = calcular_imbalance(ob)
+
+    for variante in ("A", "B"):
+        abiertas = db.secuencias_martingala_abiertas(variante)
+        if abiertas:
+            for sec in abiertas:
+                _procesar_secuencia(sec, precio_actual, imbalance)
+        else:
+            _intentar_abrir_secuencia(variante, imbalance, precio_actual)

@@ -1111,6 +1111,12 @@ def main():
                 bingx_bot.recopilar_datos()
             except Exception as e:
                 print(f"Error en cinturón de investigación BingX: {e}")
+            try:
+                # 10/08: cinturón BingX-martingala en modo sombra (2
+                # variantes A/B), mismo ciclo, sin capital real.
+                bingx_bot.simular_martingala()
+            except Exception as e:
+                print(f"Error en cinturón BingX-martingala: {e}")
         schedule.every(30).seconds.do(_bingx_ciclo)
 
         # 01/08: intento "principal" a las 00:01 ARG (=03:01 UTC, servidor

@@ -450,6 +450,35 @@ def _cmd_bingx() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_martingala() -> str:
+    """
+    10/08 — Resumen del cinturón BingX-martingala en modo sombra (2
+    variantes: A=imbalance fresco en cada trade, B=guion fijo del video).
+    Sin capital real todavía.
+    """
+    abiertas_a = db.secuencias_martingala_abiertas("A")
+    abiertas_b = db.secuencias_martingala_abiertas("B")
+    resumen = db.resumen_martingala()
+
+    if not resumen and not abiertas_a and not abiertas_b:
+        return "🎲 Cinturón BingX-martingala: sin datos todavía."
+
+    lineas = ["🎲 <b>BingX-martingala</b> (modo sombra, sin capital real)",
+              f"Abiertas ahora: A={len(abiertas_a)} | B={len(abiertas_b)}\n"]
+    for variante in ("A", "B"):
+        d = resumen.get(variante)
+        if not d:
+            lineas.append(f"<b>Variante {variante}</b>: sin secuencias cerradas todavía")
+            continue
+        nombre = "imbalance fresco" if variante == "A" else "guion fijo"
+        lineas.append(
+            f"<b>Variante {variante}</b> ({nombre}): {d['n']} secuencias | "
+            f"✅ {d['ganadas']} ganadas / ❌ {d['ruinas']} ruinas ({d['win_rate_pct']}% win)\n"
+            f"Resultado neto: {d['resultado_neto_usd']:+.2f} USD | Profundidad promedio: {d['profundidad_promedio']}"
+        )
+    return "\n".join(lineas)
+
+
 def _cmd_filtros() -> str:
     """
     07/08 — Resumen de los 6 filtros en modo sombra (multi-tf, ADX,
@@ -763,6 +792,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_paxg()
     elif cmd == "/bingx":
         return _cmd_bingx()
+    elif cmd == "/martingala":
+        return _cmd_martingala()
     elif cmd == "/filtros":
         return _cmd_filtros()
     elif cmd == "/griddinamico":
@@ -819,6 +850,9 @@ def procesar_comando(texto: str) -> str:
             "/bingx\n"
             "  📡 Cinturón de investigación BingX (order book imbalance) —\n"
             "  % de acierto real por umbral, sin operar nada todavía.\n\n"
+            "/martingala\n"
+            "  🎲 Cinturón BingX-martingala en modo sombra — 2 variantes\n"
+            "  (imbalance fresco vs. guion fijo), sin capital real.\n\n"
             "/filtros\n"
             "  🔬 Resumen de los 6 filtros en modo sombra (multi-tf, ADX,\n"
             "  volumen, VWAP, CCI, OBV) — aprobó/rechazó y resultado real.\n\n"

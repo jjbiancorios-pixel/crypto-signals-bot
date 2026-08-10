@@ -317,6 +317,31 @@ def init_db():
         )
     """)
 
+    # 10/08 — Cinturón BingX-martingala en modo sombra (sin capital real).
+    # 2 variantes: A (imbalance fresco en cada trade) y B (guion fijo del
+    # video, elegido según la dirección de la operación 1). Cada fila es
+    # UNA SECUENCIA completa (hasta 6 operaciones), no una operación suelta.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bingx_martingala_secuencias (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            variante TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            hora_inicio TEXT NOT NULL,
+            direccion_op1 TEXT NOT NULL,
+            trade_actual INTEGER DEFAULT 1,
+            apuesta_actual REAL NOT NULL,
+            precio_entrada_trade REAL NOT NULL,
+            hora_entrada_trade TEXT NOT NULL,
+            direccion_trade_actual TEXT NOT NULL,
+            perdido_acumulado REAL DEFAULT 0,
+            cerrada INTEGER DEFAULT 0,
+            resultado_usd REAL,
+            motivo_cierre TEXT,
+            hora_cierre TEXT,
+            creado TEXT NOT NULL
+        )
+    """)
+
     _migrar_columnas_riesgo(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
@@ -1925,4 +1950,106 @@ def resumen_umbral_imbalance(desde_fecha: str = None) -> list:
             "n_5m": total_5m,
             "acierto_5m_pct": round(aciertos_5m / total_5m * 100, 1) if total_5m else None,
         })
+    return resumen
+
+
+# ══════════════════════════════════════════════════════════════════
+# 10/08 — Cinturón BingX-martingala (investigación pura, modo sombra)
+# ══════════════════════════════════════════════════════════════════
+
+def abrir_secuencia_martingala(variante: str, direccion_op1: str, precio_entrada: float) -> int:
+    """Abre una nueva secuencia de martingala (trade 1 de hasta 6)."""
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        INSERT INTO bingx_martingala_secuencias
+            (variante, fecha, hora_inicio, direccion_op1, trade_actual, apuesta_actual,
+             precio_entrada_trade, hora_entrada_trade, direccion_trade_actual, creado)
+        VALUES (?,?,?,?,1,5.0,?,?,?,?)
+    """, (
+        variante, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M:%S"), direccion_op1,
+        precio_entrada, ahora.strftime("%H:%M:%S"), direccion_op1, ahora.isoformat(),
+    ))
+    conn.commit()
+    sec_id = cur.lastrowid
+    conn.close()
+    return sec_id
+
+
+def secuencias_martingala_abiertas(variante: str = None) -> list:
+    """Secuencias de martingala todavía sin cerrar (opcionalmente filtradas por variante)."""
+    conn = _conn()
+    cur = conn.cursor()
+    if variante:
+        cur.execute("SELECT * FROM bingx_martingala_secuencias WHERE cerrada = 0 AND variante = ?", (variante,))
+    else:
+        cur.execute("SELECT * FROM bingx_martingala_secuencias WHERE cerrada = 0")
+    filas = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return filas
+
+
+def avanzar_trade_martingala(sec_id: int, nueva_apuesta: float, precio_entrada: float, direccion_trade: str):
+    """El trade actual perdió — avanza al siguiente (dobla apuesta, nueva dirección/precio)."""
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        UPDATE bingx_martingala_secuencias
+        SET trade_actual = trade_actual + 1,
+            apuesta_actual = ?,
+            perdido_acumulado = perdido_acumulado + apuesta_actual,
+            precio_entrada_trade = ?,
+            hora_entrada_trade = ?,
+            direccion_trade_actual = ?
+        WHERE id = ?
+    """, (nueva_apuesta, precio_entrada, ahora.strftime("%H:%M:%S"), direccion_trade, sec_id))
+    conn.commit()
+    conn.close()
+
+
+def cerrar_secuencia_martingala(sec_id: int, resultado_usd: float, motivo: str):
+    """Cierra una secuencia — 'ganada' (recuperó todo + algo) o 'ruina' (llegó al trade 6 y perdió)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE bingx_martingala_secuencias
+        SET cerrada = 1, resultado_usd = ?, motivo_cierre = ?, hora_cierre = ?
+        WHERE id = ?
+    """, (resultado_usd, motivo, datetime.now(TZ_ARG).strftime("%H:%M:%S"), sec_id))
+    conn.commit()
+    conn.close()
+
+
+def resumen_martingala(desde_fecha: str = None) -> dict:
+    """Resumen por variante: cuántas secuencias ganadas/ruina, resultado neto, profundidad promedio."""
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT * FROM bingx_martingala_secuencias WHERE cerrada = 1"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {}
+
+    resumen = {}
+    for variante in ("A", "B"):
+        lst = [f for f in filas if f["variante"] == variante]
+        if not lst:
+            continue
+        ganadas = [f for f in lst if f["motivo_cierre"] == "ganada"]
+        ruinas = [f for f in lst if f["motivo_cierre"] == "ruina"]
+        resumen[variante] = {
+            "n": len(lst),
+            "ganadas": len(ganadas),
+            "ruinas": len(ruinas),
+            "win_rate_pct": round(len(ganadas) / len(lst) * 100, 1),
+            "resultado_neto_usd": round(sum(f["resultado_usd"] or 0 for f in lst), 2),
+            "profundidad_promedio": round(sum(f["trade_actual"] for f in lst) / len(lst), 2),
+        }
     return resumen
