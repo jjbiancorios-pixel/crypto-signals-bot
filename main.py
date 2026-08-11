@@ -1119,6 +1119,18 @@ def main():
                 print(f"Error en cinturón BingX-martingala: {e}")
         schedule.every(30).seconds.do(_bingx_ciclo)
 
+        # 10/08: chequeo de reconciliación — compara las grillas reales de
+        # Pionex contra nuestro tracking, detecta posiciones huérfanas
+        # (caso real: INJUSDT). Cada 30 min, no hace falta más frecuencia.
+        def _chequeo_huerfanas():
+            try:
+                avisos = gestion_riesgo.chequear_huerfanas()
+                for aviso in avisos:
+                    enviar_telegram(aviso)
+            except Exception as e:
+                print(f"Error en chequeo de huérfanas: {e}")
+        schedule.every(30).minutes.do(_chequeo_huerfanas)
+
         # 01/08: intento "principal" a las 00:01 ARG (=03:01 UTC, servidor
         # corre en UTC) — normalmente alcanza con este, el de _monitorear()
         # (arriba) es solo el respaldo por si justo a esa hora había

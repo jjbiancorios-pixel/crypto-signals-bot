@@ -251,6 +251,26 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
                 acciones.append(f"🔎 {par}: posible cierre detectado, confirmando en el próximo chequeo...")
                 continue
 
+            # 10/08 (FIX): antes de confirmar el cierre (aunque esta_cerrada()
+            # ya lo haya dicho DOS veces), cruzar contra la lista REAL de
+            # grillas que Pionex tiene corriendo ahora mismo. Caso real que
+            # motivó esto: INJUSDT quedó marcada como cerrada en nuestra
+            # base por un falso positivo, mientras la posición real seguía
+            # viva en Pionex durante días, invisible al stop-loss.
+            reales = pionex_api.listar_grillas_abiertas()
+            if reales is not None:
+                ids_reales = {o.get("buOrderId") for o in reales if o.get("buOrderId")}
+                if bu_order_id in ids_reales:
+                    db.limpiar_cierre_pendiente(senal_id)
+                    acciones.append(
+                        f"🚨 {par}: esta_cerrada() dijo que cerró, pero SIGUE en la lista real de "
+                        f"Pionex — descartado como falso cierre, no se tocó. REVISAR manualmente."
+                    )
+                    continue
+            # Si reales es None (falló la consulta), seguimos con el cierre
+            # normal — no bloquear el flujo por un fallo de esta verificación
+            # extra, ya suficiente con las 2 confirmaciones de esta_cerrada().
+
             resultado_pct = estado_cierre.get("resultado_pct")
             if resultado_pct is not None:
                 # 29/07: Pionex casi nunca reporta reasonBy, así que se
@@ -526,3 +546,34 @@ def simular_seguimiento():
             db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="tp_simulado")
         elif resultado_simulado <= STOP_LOSS_PCT:
             db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="stop_loss_simulado")
+
+
+def chequear_huerfanas() -> list:
+    """
+    10/08 — Chequeo de reconciliación periódico: compara TODAS las grillas
+    reales que Pionex tiene corriendo contra lo que nuestra base cree que
+    está abierto (con bu_order_id). Si hay una posición real que no está
+    en nuestro tracking, es una "huérfana" — probablemente un falso cierre
+    viejo (antes del fix del 10/08 en el debounce) que quedó corriendo sin
+    que nadie la monitoree. Se corre con poca frecuencia (no cada 1 min)
+    para no sobrecargar la API — es un chequeo de seguridad, no crítico
+    por segundo. Devuelve la lista de avisos generados (vacía si todo ok).
+    """
+    reales = pionex_api.listar_grillas_abiertas()
+    if reales is None:
+        return []  # no se pudo consultar, no reportar nada raro por un fallo de red
+
+    ids_reales = {o.get("buOrderId"): o for o in reales if o.get("buOrderId")}
+    ids_nuestros = {op["bu_order_id"] for op in db.operaciones_abiertas_con_bu_order()}
+
+    huerfanas_ids = set(ids_reales.keys()) - ids_nuestros
+    avisos = []
+    for bu_id in huerfanas_ids:
+        orden = ids_reales[bu_id]
+        par = orden.get("symbol", "?")
+        avisos.append(
+            f"🚨 HUÉRFANA detectada: {par} (bu_order_id {bu_id}) está corriendo en Pionex "
+            f"pero NO figura en nuestra base — quedó fuera de todo monitoreo (sin stop-loss). "
+            f"Revisar y cerrar/registrar manualmente."
+        )
+    return avisos

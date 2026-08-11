@@ -450,6 +450,30 @@ def _cmd_bingx() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_capital() -> str:
+    """
+    10/08 — Muestra el capital objetivo fijado para HOY (interés
+    compuesto) y cuánta reserva de recupero se usó — para diagnosticar
+    casos donde 2 operaciones del mismo día muestran montos distintos.
+    """
+    cap = db.obtener_capital_diario()
+    if not cap:
+        return "💰 Capital diario: todavía no corrió el recálculo de hoy (puede estar pospuesto por operaciones abiertas a las 00:01)."
+
+    resultado_hoy = db.resultado_acumulado_usd_hoy()
+    reserva_usada = cap["reserva_inicial"] - cap["reserva_restante"]
+
+    return (
+        f"💰 <b>Capital del día</b> ({cap['fecha']})\n"
+        f"Capital real (00:01): USD {cap['capital_dia']:.2f}\n"
+        f"Tamaño objetivo por operación: USD {cap['tamano_objetivo']:.2f}\n"
+        f"Reserva de recupero: USD {cap['reserva_inicial']:.2f} inicial | "
+        f"USD {reserva_usada:.2f} usada | USD {cap['reserva_restante']:.2f} disponible\n"
+        f"Resultado acumulado hoy: {resultado_hoy:+.2f} USD "
+        f"({'día en negativo, puede estar usando reserva' if resultado_hoy < 0 else 'día en positivo, tamaño completo sin reserva'})"
+    )
+
+
 def _cmd_martingala() -> str:
     """
     10/08 — Resumen del cinturón BingX-martingala en modo sombra (2
@@ -794,6 +818,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_bingx()
     elif cmd == "/martingala":
         return _cmd_martingala()
+    elif cmd == "/capital":
+        return _cmd_capital()
     elif cmd == "/filtros":
         return _cmd_filtros()
     elif cmd == "/griddinamico":
@@ -853,6 +879,9 @@ def procesar_comando(texto: str) -> str:
             "/martingala\n"
             "  🎲 Cinturón BingX-martingala en modo sombra — 2 variantes\n"
             "  (imbalance fresco vs. guion fijo), sin capital real.\n\n"
+            "/capital\n"
+            "  💰 Capital objetivo del día e info de la reserva de recupero\n"
+            "  — para entender por qué 2 operaciones del mismo día variaron.\n\n"
             "/filtros\n"
             "  🔬 Resumen de los 6 filtros en modo sombra (multi-tf, ADX,\n"
             "  volumen, VWAP, CCI, OBV) — aprobó/rechazó y resultado real.\n\n"

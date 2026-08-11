@@ -608,6 +608,47 @@ def esta_cerrada(bu_order_id: str) -> dict:
     return {"cerrada": cerrada, "motivo": reason, "resultado_pct": resultado_pct}
 
 
+def listar_grillas_abiertas() -> list:
+    """
+    10/08 — Lista TODAS las grillas de futuros que Pionex tiene actualmente
+    corriendo (GET /api/v1/bot/orders?type=futures_grid), sin depender de
+    nuestra base. Se usa para: (1) verificación extra antes de confirmar
+    un cierre (si el bu_order_id SIGUE en esta lista real, no confiar en
+    que cerró aunque esta_cerrada() lo diga dos veces), y (2) chequeo de
+    reconciliación periódico (detectar posiciones "huérfanas" — reales en
+    Pionex, perdidas de nuestro tracking).
+
+    Caso real que motivó esto (INJUSDT, 10/08): una posición quedó
+    corriendo en Pionex sin que nuestra base la rastreara, invisible al
+    stop-loss, por varios días. Devuelve lista de dicts con al menos
+    'buOrderId' y 'symbol', o None si falla la consulta.
+    """
+    path = "/api/v1/bot/orders"
+    query = "type=futures_grid"
+    timestamp, firma = _firmar("GET", path, query)
+    headers = {"PIONEX-KEY": PIONEX_API_KEY, "PIONEX-SIGNATURE": firma}
+    url = f"{PIONEX_BASE_URL}{path}?{query}&timestamp={timestamp}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        data = resp.json()
+        if not data.get("result"):
+            print(f"⚠️ listar_grillas_abiertas: Pionex respondió result=false: {str(data)[:200]}")
+            return None
+        ordenes = data.get("data", {}).get("orders")
+        if ordenes is None:
+            ordenes = data.get("data", []) if isinstance(data.get("data"), list) else []
+        # Solo las que siguen corriendo de verdad (nombres de campo a
+        # confirmar contra la API real — se prueban ambos por las dudas).
+        abiertas = [
+            o for o in ordenes
+            if str(o.get("status", o.get("state", ""))).lower() in ("running", "trading")
+        ]
+        return abiertas
+    except Exception as e:
+        print(f"⚠️ listar_grillas_abiertas: error de conexión/parseo — {e}")
+        return None
+
+
 def reforzar_margen(bu_order_id: str, monto_extra_usdt: float, precio_actual: float) -> dict:
     """
     POST /futuresGrid/adjustParams (type=invest_in) — agrega margen extra a
