@@ -139,17 +139,25 @@ def _cmd_corregir(args: list) -> str:
     detectó un cierre porque hiciste "Restablecer P&L" manual en Pionex,
     que resetea el tracking sin cerrar la posición real).
 
-    Uso: /corregir PAR RESULTADO_PCT [abierta|cerrada] [capital_nuevo] [bu_order_id_nuevo]
+    Uso: /corregir PAR RESULTADO_PCT [abierta|cerrada] [capital] [bu_order_id] [tiempo_min] [peor_pct]
     Ej:  /corregir MOVE -24.8 abierta 81.48
          (deja MOVE abierta de nuevo, con -24.8% y USD 81.48 de capital)
+    Ej:  /corregir INJ 1.92 cerrada 375.81 - 7740 -53
+         (cerrada, USD 375.81, sin bu_order_id nuevo, duró 7740 min, tocó -53% de peor punto)
+
+    11/08: agregados tiempo_min (duración real en minutos) y peor_pct (MAE,
+    el peor % que tocó) — antes se perdían al corregir, justo cuando más
+    valen para el análisis de MAE (caso real: INJUSDT, 5d9h, -53%). Usá
+    "-" en bu_order_id si querés saltearlo pero sí cargar los siguientes.
 
     Si Pionex generó un bu_order_id NUEVO al resetear (chequealo con
     /debug_orden PAR — si tira error, cambió), pasalo como 5to parámetro.
     """
     if len(args) < 2:
         return (
-            "⚠️ Formato: /corregir PAR RESULTADO_PCT [abierta|cerrada] [capital_nuevo] [bu_order_id_nuevo]\n"
-            "Ej: /corregir MOVE -24.8 abierta 81.48"
+            "⚠️ Formato: /corregir PAR RESULTADO_PCT [abierta|cerrada] [capital] [bu_order_id] [tiempo_min] [peor_pct]\n"
+            "Ej: /corregir MOVE -24.8 abierta 81.48\n"
+            "Ej: /corregir INJ 1.92 cerrada 375.81 - 7740 -53"
         )
     par = _quitar_simbolo(args[0])
     resultado = _parse_float(args[1])
@@ -159,19 +167,24 @@ def _cmd_corregir(args: list) -> str:
     if estado not in ("abierta", "cerrada"):
         return "⚠️ El 3er parámetro debe ser 'abierta' o 'cerrada'."
     capital_nuevo = _parse_float(args[3]) if len(args) > 3 else None
-    bu_order_id_nuevo = args[4] if len(args) > 4 else None
+    bu_order_id_nuevo = args[4] if len(args) > 4 and args[4] != "-" else None
+    tiempo_min_nuevo = int(_parse_float(args[5])) if len(args) > 5 and _parse_float(args[5]) is not None else None
+    peor_pct_nuevo = _parse_float(args[6]) if len(args) > 6 else None
 
     senal = db.ultima_senal_par_cualquiera(par)
     if not senal:
         return f"⚠️ No encontré ninguna señal de {par} en la base (ni abierta ni cerrada)."
 
     db.corregir_senal(senal["id"], resultado, reabrir=(estado == "abierta"),
-                       capital_asignado=capital_nuevo, bu_order_id=bu_order_id_nuevo)
+                       capital_asignado=capital_nuevo, bu_order_id=bu_order_id_nuevo,
+                       tiempo_real_min=tiempo_min_nuevo, peor_resultado_pct=peor_pct_nuevo)
     return (
         f"✅ Corregido {par} (señal #{senal['id']})\n"
         f"Resultado: {resultado:+.2f}% | Estado: {estado}"
         + (f" | Capital: USD {capital_nuevo:.2f}" if capital_nuevo else "")
         + (f" | bu_order_id: {bu_order_id_nuevo}" if bu_order_id_nuevo else "")
+        + (f" | Duración: {tiempo_min_nuevo} min" if tiempo_min_nuevo else "")
+        + (f" | Peor punto (MAE): {peor_pct_nuevo:+.2f}%" if peor_pct_nuevo is not None else "")
     )
 
 

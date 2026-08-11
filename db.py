@@ -439,32 +439,6 @@ def ultima_senal_par_cualquiera(par: str):
     return dict(row) if row else None
 
 
-def corregir_senal(senal_id: int, resultado_pct: float, reabrir: bool,
-                    capital_asignado: float = None, bu_order_id: str = None):
-    """
-    28/07 — Corrige una señal que quedó con datos falsos. Si reabrir=True,
-    la vuelve a marcar como abierta (cerrado=0, zona_riesgo='verde',
-    capital_apartado=0, cierre_pendiente_desde=NULL) para que el monitoreo
-    de riesgo la retome.
-    """
-    conn = _conn()
-    cur = conn.cursor()
-    if reabrir:
-        cur.execute("""
-            UPDATE senales SET resultado_pct = ?, cerrado = 0, zona_riesgo = 'verde',
-                                capital_apartado = 0, cierre_pendiente_desde = NULL
-            WHERE id = ?
-        """, (resultado_pct, senal_id))
-    else:
-        cur.execute("UPDATE senales SET resultado_pct = ?, cerrado = 1 WHERE id = ?", (resultado_pct, senal_id))
-    if capital_asignado is not None:
-        cur.execute("UPDATE senales SET capital_asignado = ? WHERE id = ?", (capital_asignado, senal_id))
-    if bu_order_id is not None:
-        cur.execute("UPDATE senales SET bu_order_id = ? WHERE id = ?", (bu_order_id, senal_id))
-    conn.commit()
-    conn.close()
-
-
 def marcar_cierre_pendiente(senal_id: int):
     """
     28/07 — FIX: Pionex puede devolver un status "cerrado-like" TRANSITORIO
@@ -693,19 +667,26 @@ def ultima_senal_par_cualquiera(par: str):
 
 
 def corregir_senal(senal_id: int, resultado_pct: float, reabrir: bool,
-                    capital_asignado: float = None, bu_order_id: str = None):
+                    capital_asignado: float = None, bu_order_id: str = None,
+                    tiempo_real_min: int = None, peor_resultado_pct: float = None):
     """
     28/07 — Corrige una señal que quedó con datos falsos (ej. cierre
     detectado por error). Si reabrir=True, la vuelve a marcar como abierta
     (cerrado=0, zona_riesgo='verde', capital_apartado=0) para que el
     monitoreo de riesgo la retome. Si reabrir=False, solo corrige el
     resultado_pct de una señal ya cerrada.
+
+    11/08 (FIX): antes NO tocaba tiempo_real_min ni peor_resultado_pct —
+    en el caso real de INJUSDT (5d9h reales, -53% de peor punto) esos 2
+    datos se hubieran perdido justo cuando más valían para el análisis de
+    MAE. Ahora son parámetros opcionales — se cargan solo si se pasan.
     """
     conn = _conn()
     cur = conn.cursor()
     if reabrir:
         cur.execute("""
-            UPDATE senales SET resultado_pct = ?, cerrado = 0, zona_riesgo = 'verde', capital_apartado = 0
+            UPDATE senales SET resultado_pct = ?, cerrado = 0, zona_riesgo = 'verde',
+                                capital_apartado = 0, cierre_pendiente_desde = NULL
             WHERE id = ?
         """, (resultado_pct, senal_id))
     else:
@@ -714,6 +695,14 @@ def corregir_senal(senal_id: int, resultado_pct: float, reabrir: bool,
         cur.execute("UPDATE senales SET capital_asignado = ? WHERE id = ?", (capital_asignado, senal_id))
     if bu_order_id is not None:
         cur.execute("UPDATE senales SET bu_order_id = ? WHERE id = ?", (bu_order_id, senal_id))
+    if tiempo_real_min is not None:
+        cur.execute("UPDATE senales SET tiempo_real_min = ? WHERE id = ?", (tiempo_real_min, senal_id))
+    if peor_resultado_pct is not None:
+        cur.execute("""
+            UPDATE senales
+            SET peor_resultado_pct = CASE WHEN peor_resultado_pct IS NULL OR ? < peor_resultado_pct THEN ? ELSE peor_resultado_pct END
+            WHERE id = ?
+        """, (peor_resultado_pct, peor_resultado_pct, senal_id))
     conn.commit()
     conn.close()
 
