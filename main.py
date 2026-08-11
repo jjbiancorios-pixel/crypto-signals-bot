@@ -44,6 +44,11 @@ PARES = [
     # Seleccionados por liquidez y disponibilidad confirmada en Pionex
     "TONUSDT","EIGENUSDT","MOVEUSDT","VIRTUALUSDT",
     "PENGUUSDT","MOCAUSDT","SCRUSDT",
+    # 10/08: 14 pares nuevos, disponibilidad confirmada por Juanjo en la
+    # app (de 15 propuestos, HIGH no está disponible como bot y se sacó)
+    "FILUSDT","BCHUSDT","DASHUSDT","XMRUSDT","RENDERUSDT",
+    "JUPUSDT","NEOUSDT","LPTUSDT","PENDLEUSDT","ENSUSDT",
+    "YGGUSDT","MANTAUSDT","TRBUSDT","API3USDT",
 ]
 
 MIN_SCORE_ALTA  = 11
