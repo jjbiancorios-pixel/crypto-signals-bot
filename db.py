@@ -2190,3 +2190,41 @@ def resumen_estrategias_imbalance(fee_pct_roundtrip: float = 0.10) -> list:
         resumen.append({"nombre": "Combinada (0.4 min, doble peso si 0.6)", "n": 0})
 
     return resumen
+
+
+def resumen_mae_paxg(desde_fecha: str = None) -> dict:
+    """
+    11/08 — Análisis de MAE/MFE para el cinturón PAXG/BTC (mismo enfoque
+    que resumen_mae()/resumen_mfe() del bot principal): compara cuánto
+    cayeron las combinaciones GANADORAS antes de recuperarse — la base
+    para saber si el SL de -20% (heredado de v16, sin recalibrar para
+    PAXG) tiene sentido acá, o si el perfil más tranquilo de PAXG permite
+    uno más ajustado.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT resultado_pct, peor_resultado_pct, mejor_resultado_pct FROM paxg_simulaciones WHERE cerrada = 1"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    ganadoras = [f for f in filas if f["resultado_pct"] is not None and f["resultado_pct"] > 0]
+    perdedoras = [f for f in filas if f["resultado_pct"] is not None and f["resultado_pct"] <= 0]
+    mae_ganadoras = [g["peor_resultado_pct"] for g in ganadoras if g["peor_resultado_pct"] is not None]
+    mae_perdedoras = [p["peor_resultado_pct"] for p in perdedoras if p["peor_resultado_pct"] is not None]
+
+    return {
+        "total_con_dato": len(filas),
+        "n_ganadoras": len(ganadoras),
+        "n_perdedoras": len(perdedoras),
+        "mae_ganadoras_peor": min(mae_ganadoras) if mae_ganadoras else None,
+        "mae_ganadoras_promedio": round(sum(mae_ganadoras) / len(mae_ganadoras), 2) if mae_ganadoras else None,
+        "mae_perdedoras_promedio": round(sum(mae_perdedoras) / len(mae_perdedoras), 2) if mae_perdedoras else None,
+        "confiable": len(filas) >= 50,
+    }

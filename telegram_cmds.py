@@ -436,6 +436,16 @@ def _cmd_paxg() -> str:
             lineas.append(f"... y {len(resumen)-10} combinaciones más (no se muestran acá, pero SÍ están en el total de arriba).")
     else:
         lineas.append("\nTodavía ninguna combinación cerró.")
+
+    # 11/08: análisis de MAE para calibrar el SL específico de PAXG
+    mae = db.resumen_mae_paxg()
+    if mae.get("total_con_dato"):
+        lineas.append(
+            f"\n📉 <b>MAE</b> (para calibrar el SL, hoy fijo en -20%) — {mae['total_con_dato']} con dato "
+            f"({'✅ confiable' if mae['confiable'] else '⚠️ muestra chica, no confiable todavía'})\n"
+            f"Ganadoras: peor caso {mae['mae_ganadoras_peor']}%, promedio {mae['mae_ganadoras_promedio']}%\n"
+            f"Perdedoras: promedio {mae['mae_perdedoras_promedio']}%"
+        )
     return "\n".join(lineas)
 
 

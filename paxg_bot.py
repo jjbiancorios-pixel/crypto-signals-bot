@@ -26,7 +26,12 @@ PAR_BTC = "BTCUSDT"
 APALANCAMIENTO = {"bajo": 5, "medio": 10}
 TP_OBJETIVOS = [1.0, 2.0, 3.0, 5.0]  # % — rango 1-5% pedido por Juanjo
 STOP_LOSS_PCT = -20.0  # mismo criterio que v16 (calibrado con datos propios más adelante)
-MAX_DURACION_HORAS = 20  # "intradía" — se fuerza el cierre si no cerró antes por TP/SL
+MAX_DURACION_HORAS = 20  # "intradía" — se fuerza el cierre si no cerró antes por TP/SL/trailing
+# 11/08 — El TP_OBJETIVOS ya no cierra directo: pasa a ser el punto donde
+# se ACTIVA el trailing. Una vez activado, cierra si el resultado
+# retrocede este % del máximo alcanzado (proporcional, no puntos fijos —
+# se adapta igual de bien al TP de 1% que al de 5%).
+RETROCESO_TRAILING_PCT = 0.20
 
 BYBIT_TF = {"1h": "60", "4h": "240"}
 OKX_TF = {"1h": "1H", "4h": "4H"}
@@ -230,18 +235,37 @@ def analizar_y_simular():
         if direccion and not db.paxg_hay_combos_abiertas_de(tipo):
             abrir_lote(tipo, direccion, precio_paxg_actual)
 
+    # 11/08 — Comisión real de Pionex Futuros (Maker 0.02% / Taker 0.05%,
+    # confirmado). Se usa una estimación conservadora ida+vuelta de 0.10%
+    # (mismo criterio que en BingX), aplicada sobre el NOCIONAL — por eso
+    # se multiplica por el apalancamiento antes de restarla, igual que el
+    # resultado bruto (ambos escalan igual con el apalancamiento).
+    COMISION_IDA_VUELTA_PCT = 0.10
+
     # Seguimiento de las combinaciones abiertas
     abiertas = db.paxg_simulaciones_abiertas()
     for combo in abiertas:
         cambio_pct = (precio_paxg_actual - combo["precio_entrada"]) / combo["precio_entrada"] * 100
         es_largo = combo["direccion"] == "LARGO"
-        resultado = cambio_pct * combo["apalancamiento"] * (1 if es_largo else -1)
+        resultado_bruto = cambio_pct * combo["apalancamiento"] * (1 if es_largo else -1)
+        comision_aplicada = COMISION_IDA_VUELTA_PCT * combo["apalancamiento"]
+        resultado = resultado_bruto - comision_aplicada
 
         db.actualizar_paxg_simulacion(combo["id"], resultado)
 
-        if resultado >= combo["tp_objetivo_pct"]:
-            db.cerrar_paxg_simulacion(combo["id"], resultado, motivo="tp")
-            continue
+        # 11/08 — Trailing: el TP fijo ya no cierra directo, ahora ACTIVA
+        # el trailing. "pico" usa el mejor_resultado_pct ya guardado (de
+        # antes de este ciclo) combinado con el resultado de AHORA, para
+        # no depender de una segunda consulta a la base.
+        pico_actual = resultado
+        if combo["mejor_resultado_pct"] is not None:
+            pico_actual = max(resultado, combo["mejor_resultado_pct"])
+
+        if pico_actual >= combo["tp_objetivo_pct"]:
+            umbral_cierre = pico_actual * (1 - RETROCESO_TRAILING_PCT)
+            if resultado <= umbral_cierre:
+                db.cerrar_paxg_simulacion(combo["id"], resultado, motivo="trailing")
+                continue
         if resultado <= STOP_LOSS_PCT:
             db.cerrar_paxg_simulacion(combo["id"], resultado, motivo="stop_loss")
             continue

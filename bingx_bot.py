@@ -176,6 +176,16 @@ APUESTA_INICIAL = 5.0
 PROFUNDIDAD_MAXIMA = 6
 GUION_LONG = ["LONG", "LONG", "SHORT", "LONG", "SHORT", "LONG"]
 GUION_SHORT = ["SHORT", "SHORT", "LONG", "SHORT", "LONG", "SHORT"]
+# 11/08 (FIX CRÍTICO): confirmado con /estrategias_imbalance — el
+# movimiento bruto real a 1 minuto promedia apenas +0.002%, muy por
+# debajo de la comisión ida+vuelta de BingX perpetuos (0.10%, maker+taker
+# o taker+taker). Antes, _evaluar_trade contaba como "ganada" CUALQUIER
+# movimiento a favor, sin restar comisión — sobreestimaba fuerte el
+# resultado real (la Variante A mostraba +$705 con datos reales que en
+# la práctica, descontando comisión, muy probablemente hubieran sido
+# pérdida). Ahora exige superar la comisión para contar como ganada de
+# verdad.
+COMISION_IDA_VUELTA_PCT = 0.10
 
 
 def _direccion_por_imbalance(imbalance: float):
@@ -188,10 +198,18 @@ def _direccion_por_imbalance(imbalance: float):
 
 
 def _evaluar_trade(direccion: str, precio_entrada: float, precio_actual: float) -> bool:
-    """True si el precio se movió a favor de la dirección predicha."""
+    """
+    True solo si el precio se movió a favor de la dirección predicha Y
+    ese movimiento supera la comisión ida+vuelta real — antes contaba
+    cualquier movimiento a favor, sin importar el tamaño, lo cual
+    sobreestimaba la rentabilidad real (ver comentario de
+    COMISION_IDA_VUELTA_PCT arriba).
+    """
     if direccion == "LONG":
-        return precio_actual > precio_entrada
-    return precio_actual < precio_entrada
+        movimiento_pct = (precio_actual - precio_entrada) / precio_entrada * 100
+    else:
+        movimiento_pct = (precio_entrada - precio_actual) / precio_entrada * 100
+    return movimiento_pct > COMISION_IDA_VUELTA_PCT
 
 
 def _intentar_abrir_secuencia(variante: str, imbalance: float, precio_actual: float):
