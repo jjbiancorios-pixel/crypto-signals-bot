@@ -203,6 +203,35 @@ def _intentar_abrir_secuencia(variante: str, imbalance: float, precio_actual: fl
         db.abrir_secuencia_martingala(variante, direccion, precio_actual)
 
 
+def _actualizar_capital_track(variante: str, motivo: str, resultado_usd: float):
+    """
+    11/08 — Actualiza los 2 tracks de capital de una variante sobre el
+    MISMO resultado real (no simula secuencias nuevas, es bookkeeping):
+    - "{variante}_500": capital corrido puro, sin red de contención — si
+      una ruina lo deja muy bajo, queda así, sin reponerse.
+    - "{variante}_1000": 500 activos + 500 de reserva — tras CUALQUIER
+      ruina, si queda reserva, repone el capital activo a $500 exacto,
+      descontando lo que haga falta de la reserva (pedido explícito de
+      Juanjo: reponer automático tras cada ruina, no solo si se agota).
+    """
+    for modo in ("500", "1000"):
+        track = f"{variante}_{modo}"
+        estado = db.obtener_capital_track(track)
+        nuevo_capital = estado["capital_activo"] + resultado_usd
+        nueva_reserva = estado["reserva_disponible"]
+        veces_repuesto = estado.get("veces_repuesto", 0)
+
+        if motivo == "ruina" and modo == "1000" and nueva_reserva > 0:
+            faltante = 500.0 - nuevo_capital
+            if faltante > 0:
+                usado = min(faltante, nueva_reserva)
+                nuevo_capital += usado
+                nueva_reserva -= usado
+                veces_repuesto += 1
+
+        db.guardar_capital_track(track, round(nuevo_capital, 2), round(nueva_reserva, 2), veces_repuesto)
+
+
 def _procesar_secuencia(sec: dict, precio_actual: float, imbalance: float):
     """Evalúa si el trade actual de una secuencia abierta ya cumplió su minuto de espera."""
     hora_entrada = datetime.strptime(
@@ -217,12 +246,14 @@ def _procesar_secuencia(sec: dict, precio_actual: float, imbalance: float):
     if gano:
         resultado_neto = sec["apuesta_actual"] - sec["perdido_acumulado"]
         db.cerrar_secuencia_martingala(sec["id"], round(resultado_neto, 2), motivo="ganada")
+        _actualizar_capital_track(sec["variante"], "ganada", round(resultado_neto, 2))
         return
 
     # Perdió este trade
     if sec["trade_actual"] >= PROFUNDIDAD_MAXIMA:
         perdida_total = -(sec["perdido_acumulado"] + sec["apuesta_actual"])
         db.cerrar_secuencia_martingala(sec["id"], round(perdida_total, 2), motivo="ruina")
+        _actualizar_capital_track(sec["variante"], "ruina", round(perdida_total, 2))
         return
 
     # Avanza al siguiente trade — dirección según la variante

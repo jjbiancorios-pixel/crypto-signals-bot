@@ -342,6 +342,21 @@ def init_db():
         )
     """)
 
+    # 11/08 — Capital PERSISTENTE por track (4: A_500, A_1000, B_500,
+    # B_1000) — 2 formas de llevar la cuenta sobre los MISMOS resultados
+    # de cada variante: "500" = capital corrido sin red de contención,
+    # "1000" = 500 activos + 500 de reserva que repone a $500 automático
+    # tras cada ruina (mientras haya reserva disponible).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bingx_martingala_capital (
+            track TEXT PRIMARY KEY,
+            capital_activo REAL NOT NULL,
+            reserva_disponible REAL NOT NULL,
+            veces_repuesto INTEGER DEFAULT 0,
+            actualizado TEXT NOT NULL
+        )
+    """)
+
     _migrar_columnas_riesgo(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
@@ -2041,4 +2056,50 @@ def resumen_martingala(desde_fecha: str = None) -> dict:
             "resultado_neto_usd": round(sum(f["resultado_usd"] or 0 for f in lst), 2),
             "profundidad_promedio": round(sum(f["trade_actual"] for f in lst) / len(lst), 2),
         }
+    return resumen
+
+
+# ══════════════════════════════════════════════════════════════════
+# 11/08 — Capital persistente por track (bookkeeping sobre los mismos
+# resultados de A/B, en modo "500 puro" y "1000 con reserva 500+500")
+# ══════════════════════════════════════════════════════════════════
+
+def obtener_capital_track(track: str) -> dict:
+    """Devuelve el estado del track, creándolo con valores iniciales si no existe."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM bingx_martingala_capital WHERE track = ?", (track,))
+    row = cur.fetchone()
+    if row:
+        conn.close()
+        return dict(row)
+    reserva_inicial = 500.0 if track.endswith("_1000") else 0.0
+    cur.execute("""
+        INSERT INTO bingx_martingala_capital (track, capital_activo, reserva_disponible, actualizado)
+        VALUES (?, 500.0, ?, ?)
+    """, (track, reserva_inicial, datetime.now(TZ_ARG).isoformat()))
+    conn.commit()
+    conn.close()
+    return {"track": track, "capital_activo": 500.0, "reserva_disponible": reserva_inicial, "veces_repuesto": 0}
+
+
+def guardar_capital_track(track: str, capital_activo: float, reserva_disponible: float, veces_repuesto: int):
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE bingx_martingala_capital
+        SET capital_activo = ?, reserva_disponible = ?, veces_repuesto = ?, actualizado = ?
+        WHERE track = ?
+    """, (capital_activo, reserva_disponible, veces_repuesto, datetime.now(TZ_ARG).isoformat(), track))
+    conn.commit()
+    conn.close()
+
+
+def resumen_capital_tracks() -> dict:
+    """Estado actual de los 4 tracks (A_500, A_1000, B_500, B_1000)."""
+    resumen = {}
+    for variante in ("A", "B"):
+        for modo in ("500", "1000"):
+            track = f"{variante}_{modo}"
+            resumen[track] = obtener_capital_track(track)
     return resumen

@@ -513,6 +513,19 @@ def _cmd_martingala() -> str:
             f"✅ {d['ganadas']} ganadas / ❌ {d['ruinas']} ruinas ({d['win_rate_pct']}% win)\n"
             f"Resultado neto: {d['resultado_neto_usd']:+.2f} USD | Profundidad promedio: {d['profundidad_promedio']}"
         )
+
+    # 11/08: capital persistente — 2 formas de llevar la cuenta sobre los
+    # mismos resultados (500 puro vs. 1000 con reserva que repone a $500).
+    tracks = db.resumen_capital_tracks()
+    lineas.append("\n💰 <b>Capital persistente</b> (sobre los mismos resultados de arriba):")
+    for variante in ("A", "B"):
+        t500 = tracks[f"{variante}_500"]
+        t1000 = tracks[f"{variante}_1000"]
+        lineas.append(
+            f"{variante}_500: USD {t500['capital_activo']:.2f} activos (sin red)\n"
+            f"{variante}_1000: USD {t1000['capital_activo']:.2f} activos | "
+            f"USD {t1000['reserva_disponible']:.2f} reserva | repuesto {t1000.get('veces_repuesto', 0)}x"
+        )
     return "\n".join(lineas)
 
 
