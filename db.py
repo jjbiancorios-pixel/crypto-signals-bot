@@ -2132,7 +2132,7 @@ def resumen_estrategias_imbalance(fee_pct_roundtrip: float = 0.10) -> list:
     def retorno_neto(f):
         direccion = 1 if f["imbalance"] > 0 else -1
         movimiento_pct = (f["precio_1min_despues"] - f["precio"]) / f["precio"] * 100 * direccion
-        return movimiento_pct - fee_pct_roundtrip
+        return movimiento_pct, movimiento_pct - fee_pct_roundtrip
 
     def rsi_vwap_confirma(f, direccion):
         if f["rsi_1m"] is None or f["vwap_1m"] is None:
@@ -2142,43 +2142,48 @@ def resumen_estrategias_imbalance(fee_pct_roundtrip: float = 0.10) -> list:
         return rsi_ok and vwap_ok
 
     simples = {"0.4 solo": [], "0.4 + RSI/VWAP": [], "0.6 solo": [], "0.6 + RSI/VWAP": []}
-    combinada = []  # lista de (retorno, peso)
+    combinada = []  # lista de (bruto, neto, peso)
 
     for f in filas:
         imb = f["imbalance"]
         direccion = 1 if imb > 0 else -1
-        neto = retorno_neto(f)
+        bruto, neto = retorno_neto(f)
 
         if abs(imb) >= 0.4:
-            simples["0.4 solo"].append(neto)
+            simples["0.4 solo"].append((bruto, neto))
             peso = 2 if abs(imb) >= 0.6 else 1
-            combinada.append((neto, peso))
+            combinada.append((bruto, neto, peso))
             if rsi_vwap_confirma(f, direccion):
-                simples["0.4 + RSI/VWAP"].append(neto)
+                simples["0.4 + RSI/VWAP"].append((bruto, neto))
         if abs(imb) >= 0.6:
-            simples["0.6 solo"].append(neto)
+            simples["0.6 solo"].append((bruto, neto))
             if rsi_vwap_confirma(f, direccion):
-                simples["0.6 + RSI/VWAP"].append(neto)
+                simples["0.6 + RSI/VWAP"].append((bruto, neto))
 
     resumen = []
     for nombre, valores in simples.items():
         if not valores:
             resumen.append({"nombre": nombre, "n": 0})
             continue
-        ganadoras = sum(1 for v in valores if v > 0)
+        netos = [v[1] for v in valores]
+        brutos = [v[0] for v in valores]
+        ganadoras = sum(1 for v in netos if v > 0)
         resumen.append({
             "nombre": nombre, "n": len(valores),
-            "retorno_prom_pct": round(sum(valores) / len(valores), 4),
+            "bruto_prom_pct": round(sum(brutos) / len(brutos), 4),
+            "retorno_prom_pct": round(sum(netos) / len(netos), 4),
             "win_rate_pct": round(ganadoras / len(valores) * 100, 1),
         })
 
     if combinada:
-        suma_ponderada = sum(r * p for r, p in combinada)
-        suma_pesos = sum(p for r, p in combinada)
-        ganadoras = sum(1 for r, p in combinada if r > 0)
+        suma_ponderada_bruto = sum(b * p for b, n, p in combinada)
+        suma_ponderada_neto = sum(n * p for b, n, p in combinada)
+        suma_pesos = sum(p for b, n, p in combinada)
+        ganadoras = sum(1 for b, n, p in combinada if n > 0)
         resumen.append({
             "nombre": "Combinada (0.4 min, doble peso si 0.6)", "n": len(combinada),
-            "retorno_prom_pct": round(suma_ponderada / suma_pesos, 4),
+            "bruto_prom_pct": round(suma_ponderada_bruto / suma_pesos, 4),
+            "retorno_prom_pct": round(suma_ponderada_neto / suma_pesos, 4),
             "win_rate_pct": round(ganadoras / len(combinada) * 100, 1),
         })
     else:

@@ -511,7 +511,8 @@ def _cmd_estrategias_imbalance() -> str:
             continue
         lineas.append(
             f"<b>{r['nombre']}</b>\n"
-            f"n={r['n']} | retorno prom/operación: {r['retorno_prom_pct']:+.3f}% | win rate: {r['win_rate_pct']}%"
+            f"n={r['n']} | bruto (sin comisión): {r.get('bruto_prom_pct', 0):+.4f}% | "
+            f"neto: {r['retorno_prom_pct']:+.4f}% | win rate: {r['win_rate_pct']}%"
         )
     return "\n".join(lineas)
 
