@@ -34,7 +34,7 @@ MAX_POSICIONES_SIMULTANEAS = 2  # v16: tope duro nuevo — antes no existía (~1
 # recalibra manteniendo la misma proporción aproximada del diseño original
 # (6 de ~14 posiciones ≈ 43% -> redondea a 1 de 2).
 MAX_ATASCADAS_RIESGO = 1
-MAX_APERTURAS_POR_CICLO = 1  # v16: nuevo — máx. 1 apertura nueva por ciclo de 15 min
+MAX_APERTURAS_POR_CICLO = 2  # 12/08: subido de 1 a 2 (Juanjo) — igual al tope de posiciones simultáneas, para no perder una 2da señal buena cuando hay capital libre y aparecen 2 el mismo ciclo
 STOP_LOSS_PCT = -20  # 28/07: NUEVO — cierre real si una operación llega a este % de pérdida sobre su capital
 # asignado, sin importar cuántos días lleve. Calibrado con expectancy real sobre 542 operaciones
 # históricas limpias (98% win rate, +1.66% promedio ganador): -20% da expectancy de +1.25%/operación,
@@ -74,7 +74,9 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
 
     Reglas v16 (filosofía "pocas y grandes"):
     0. Tope duro de posiciones simultáneas (MAX_POSICIONES_SIMULTANEAS=2).
-    1. Máx. 1 apertura nueva por ciclo de 15 min (MAX_APERTURAS_POR_CICLO),
+    1. Máx. 2 aperturas nuevas por ciclo de 15 min (MAX_APERTURAS_POR_CICLO,
+       subido de 1 a 2 el 12/08 — igual al tope de posiciones, para no
+       perder una 2da señal buena el mismo ciclo si hay capital libre),
        salvo que sea una reapertura del sistema <5min (es_reapertura=True),
        que tiene su propia vara más exigente (VWAP+EMA de régimen) y no
        compite por este cupo — ver telegram/main para el detalle.
