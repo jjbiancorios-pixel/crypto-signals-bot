@@ -2103,3 +2103,85 @@ def resumen_capital_tracks() -> dict:
             track = f"{variante}_{modo}"
             resumen[track] = obtener_capital_track(track)
     return resumen
+
+
+def resumen_estrategias_imbalance(fee_pct_roundtrip: float = 0.10) -> list:
+    """
+    11/08 — Calcula RETROACTIVAMENTE, con los datos ya guardados en
+    bingx_datos_log, el resultado de 5 combinaciones de entrada (sin
+    martingala, apuesta fija, sin doblar): umbral 0.4 solo, 0.4+RSI/VWAP,
+    0.6 solo, 0.6+RSI/VWAP, y combinada (0.4 mínimo para entrar, doble
+    "peso" si además llega a 0.6). Resta una comisión estimada (0.10%
+    ida+vuelta, maker+taker o taker+taker en BingX perpetuos) del
+    movimiento de precio bruto a 1 minuto — el resultado en % de precio
+    no depende del apalancamiento que se use después (se cancela
+    matemáticamente), así que sirve para cualquier tamaño de posición.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT imbalance, precio, precio_1min_despues, rsi_1m, vwap_1m
+        FROM bingx_datos_log
+        WHERE imbalance IS NOT NULL AND precio_1min_despues IS NOT NULL
+    """)
+    filas = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return []
+
+    def retorno_neto(f):
+        direccion = 1 if f["imbalance"] > 0 else -1
+        movimiento_pct = (f["precio_1min_despues"] - f["precio"]) / f["precio"] * 100 * direccion
+        return movimiento_pct - fee_pct_roundtrip
+
+    def rsi_vwap_confirma(f, direccion):
+        if f["rsi_1m"] is None or f["vwap_1m"] is None:
+            return False
+        rsi_ok = (f["rsi_1m"] > 50) if direccion == 1 else (f["rsi_1m"] < 50)
+        vwap_ok = (f["precio"] > f["vwap_1m"]) if direccion == 1 else (f["precio"] < f["vwap_1m"])
+        return rsi_ok and vwap_ok
+
+    simples = {"0.4 solo": [], "0.4 + RSI/VWAP": [], "0.6 solo": [], "0.6 + RSI/VWAP": []}
+    combinada = []  # lista de (retorno, peso)
+
+    for f in filas:
+        imb = f["imbalance"]
+        direccion = 1 if imb > 0 else -1
+        neto = retorno_neto(f)
+
+        if abs(imb) >= 0.4:
+            simples["0.4 solo"].append(neto)
+            peso = 2 if abs(imb) >= 0.6 else 1
+            combinada.append((neto, peso))
+            if rsi_vwap_confirma(f, direccion):
+                simples["0.4 + RSI/VWAP"].append(neto)
+        if abs(imb) >= 0.6:
+            simples["0.6 solo"].append(neto)
+            if rsi_vwap_confirma(f, direccion):
+                simples["0.6 + RSI/VWAP"].append(neto)
+
+    resumen = []
+    for nombre, valores in simples.items():
+        if not valores:
+            resumen.append({"nombre": nombre, "n": 0})
+            continue
+        ganadoras = sum(1 for v in valores if v > 0)
+        resumen.append({
+            "nombre": nombre, "n": len(valores),
+            "retorno_prom_pct": round(sum(valores) / len(valores), 4),
+            "win_rate_pct": round(ganadoras / len(valores) * 100, 1),
+        })
+
+    if combinada:
+        suma_ponderada = sum(r * p for r, p in combinada)
+        suma_pesos = sum(p for r, p in combinada)
+        ganadoras = sum(1 for r, p in combinada if r > 0)
+        resumen.append({
+            "nombre": "Combinada (0.4 min, doble peso si 0.6)", "n": len(combinada),
+            "retorno_prom_pct": round(suma_ponderada / suma_pesos, 4),
+            "win_rate_pct": round(ganadoras / len(combinada) * 100, 1),
+        })
+    else:
+        resumen.append({"nombre": "Combinada (0.4 min, doble peso si 0.6)", "n": 0})
+
+    return resumen

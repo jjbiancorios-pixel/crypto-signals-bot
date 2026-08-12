@@ -459,7 +459,11 @@ def _cmd_bingx() -> str:
         if r["n_5m"]:
             linea += f" | 5min {r['acierto_5m_pct']}% (n={r['n_5m']})"
         lineas.append(linea)
-    lineas.append("\n⚠️ Con muestra chica (n bajo) el número no es confiable todavía — cuanto más alto el umbral, menos casos, ojo con sobre-interpretar.")
+    n_minimo = min(r["n_1m"] for r in resumen if r["n_1m"] > 0)
+    if n_minimo < 200:
+        lineas.append(f"\n⚠️ El umbral con menos casos tiene n={n_minimo} — todavía no es confiable, ojo con sobre-interpretar.")
+    else:
+        lineas.append(f"\n✅ Todos los umbrales mostrados tienen n≥{n_minimo} — muestra sólida, no son casualidad.")
     return "\n".join(lineas)
 
 
@@ -485,6 +489,31 @@ def _cmd_capital() -> str:
         f"Resultado acumulado hoy: {resultado_hoy:+.2f} USD "
         f"({'día en negativo, puede estar usando reserva' if resultado_hoy < 0 else 'día en positivo, tamaño completo sin reserva'})"
     )
+
+
+def _cmd_estrategias_imbalance() -> str:
+    """
+    11/08 — Calcula retroactivamente (con los datos ya guardados, sin
+    esperar más días) el resultado de 5 combinaciones NO-martingala:
+    apuesta fija, sin doblar, comisión real de BingX (0.10% ida+vuelta)
+    ya descontada. Resultado en % de precio, independiente del
+    apalancamiento que se elija.
+    """
+    resumen = db.resumen_estrategias_imbalance()
+    if not resumen or all(r["n"] == 0 for r in resumen):
+        return "📊 Estrategias de imbalance (sin martingala): sin datos suficientes todavía."
+
+    lineas = ["📊 <b>5 estrategias direccionales</b> (sin martingala, apuesta fija)",
+              "Comisión BingX ya descontada (0.10% ida+vuelta):\n"]
+    for r in resumen:
+        if r["n"] == 0:
+            lineas.append(f"{r['nombre']}: sin datos")
+            continue
+        lineas.append(
+            f"<b>{r['nombre']}</b>\n"
+            f"n={r['n']} | retorno prom/operación: {r['retorno_prom_pct']:+.3f}% | win rate: {r['win_rate_pct']}%"
+        )
+    return "\n".join(lineas)
 
 
 def _cmd_martingala() -> str:
@@ -842,6 +871,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_paxg()
     elif cmd == "/bingx":
         return _cmd_bingx()
+    elif cmd == "/estrategias_imbalance":
+        return _cmd_estrategias_imbalance()
     elif cmd == "/martingala":
         return _cmd_martingala()
     elif cmd == "/capital":
@@ -902,6 +933,9 @@ def procesar_comando(texto: str) -> str:
             "/bingx\n"
             "  📡 Cinturón de investigación BingX (order book imbalance) —\n"
             "  % de acierto real por umbral, sin operar nada todavía.\n\n"
+            "/estrategias_imbalance\n"
+            "  📊 5 estrategias direccionales (sin martingala) calculadas\n"
+            "  retroactivamente con los datos ya guardados, comisión incluida.\n\n"
             "/martingala\n"
             "  🎲 Cinturón BingX-martingala en modo sombra — 2 variantes\n"
             "  (imbalance fresco vs. guion fijo), sin capital real.\n\n"
