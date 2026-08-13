@@ -426,14 +426,12 @@ def _cmd_paxg() -> str:
         total_perdidas = total_cerradas - total_ganadas
         lineas.append(f"\nTotal cerradas (todas las combinaciones): {total_cerradas} | ✅ {total_ganadas}  ❌ {total_perdidas}")
 
-        lineas.append("\n<b>Ranking por combinación</b> (mejor a peor, top 10):")
-        for r in resumen[:10]:
+        lineas.append(f"\n<b>Ranking completo</b> (mejor a peor, {len(resumen)} combinaciones):")
+        for r in resumen:
             lineas.append(
                 f"{r['combinacion']}: {r['resultado_promedio_pct']:+.2f}% prom | "
                 f"win {r['win_rate_pct']}% | n={r['n']}"
             )
-        if len(resumen) > 10:
-            lineas.append(f"... y {len(resumen)-10} combinaciones más (no se muestran acá, pero SÍ están en el total de arriba).")
     else:
         lineas.append("\nTodavía ninguna combinación cerró.")
 
