@@ -468,6 +468,28 @@ def _cmd_paxg_motivos() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_paxg_version() -> str:
+    """
+    13/08 — Verifica DIRECTAMENTE qué código de paxg_bot.py está corriendo
+    ahora mismo en el servidor (constantes reales), en vez de inferirlo de
+    los resultados. Caso real que motivó esto: el 12/08 se confirmó una
+    subida con el fix de trailing, pero /paxg_motivos mostró cierres "tp"
+    (el motivo viejo) con fecha posterior — el servidor estaba corriendo
+    una versión vieja sin que hubiera forma directa de saberlo hasta ver
+    el patrón en los resultados, un día después.
+    """
+    import paxg_bot
+    tiene_comision = hasattr(paxg_bot, "COMISION_IDA_VUELTA_PCT")
+    tiene_trailing = hasattr(paxg_bot, "RETROCESO_TRAILING_PCT")
+    return (
+        f"🔧 <b>Versión real de paxg_bot.py en este servidor</b>\n"
+        f"Comisión (COMISION_IDA_VUELTA_PCT): {paxg_bot.COMISION_IDA_VUELTA_PCT if tiene_comision else '❌ NO EXISTE — código viejo'}\n"
+        f"Trailing (RETROCESO_TRAILING_PCT): {paxg_bot.RETROCESO_TRAILING_PCT if tiene_trailing else '❌ NO EXISTE — código viejo'}\n"
+        f"Stop-loss (STOP_LOSS_PCT): {paxg_bot.STOP_LOSS_PCT}\n"
+        f"TP objetivos (ahora activadores de trailing): {paxg_bot.TP_OBJETIVOS}"
+    )
+
+
 def _cmd_bingx() -> str:
     """
     05/08 — Resumen del cinturón de INVESTIGACIÓN BingX (order book
@@ -901,6 +923,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_paxg()
     elif cmd == "/paxg_motivos":
         return _cmd_paxg_motivos()
+    elif cmd == "/paxg_version":
+        return _cmd_paxg_version()
     elif cmd == "/bingx":
         return _cmd_bingx()
     elif cmd == "/estrategias_imbalance":
@@ -965,6 +989,9 @@ def procesar_comando(texto: str) -> str:
             "/paxg_motivos\n"
             "  🔍 Desglose de cierres de PAXG por motivo (tp/trailing/SL) —\n"
             "  para verificar si el fix de trailing ya está aplicándose.\n\n"
+            "/paxg_version\n"
+            "  🔧 Verifica directamente qué código de paxg_bot.py corre\n"
+            "  en el servidor ahora — sin esperar a inferirlo de resultados.\n\n"
             "/bingx\n"
             "  📡 Cinturón de investigación BingX (order book imbalance) —\n"
             "  % de acierto real por umbral, sin operar nada todavía.\n\n"

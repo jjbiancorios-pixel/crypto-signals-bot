@@ -32,6 +32,13 @@ MAX_DURACION_HORAS = 20  # "intradía" — se fuerza el cierre si no cerró ante
 # retrocede este % del máximo alcanzado (proporcional, no puntos fijos —
 # se adapta igual de bien al TP de 1% que al de 5%).
 RETROCESO_TRAILING_PCT = 0.20
+# 11/08 — Comisión real de Pionex Futuros (Maker 0.02% / Taker 0.05%,
+# confirmado). Estimación conservadora ida+vuelta de 0.10% (mismo criterio
+# que en BingX). A nivel de módulo (no local a la función) a propósito,
+# para poder verificarla desde afuera con /paxg_version — el 12/08 hubo
+# un caso real donde el servidor corría código viejo sin que se notara
+# hasta ver "tp" cerrando en fechas posteriores al fix.
+COMISION_IDA_VUELTA_PCT = 0.10
 
 BYBIT_TF = {"1h": "60", "4h": "240"}
 OKX_TF = {"1h": "1H", "4h": "4H"}
@@ -240,7 +247,6 @@ def analizar_y_simular():
     # (mismo criterio que en BingX), aplicada sobre el NOCIONAL — por eso
     # se multiplica por el apalancamiento antes de restarla, igual que el
     # resultado bruto (ambos escalan igual con el apalancamiento).
-    COMISION_IDA_VUELTA_PCT = 0.10
 
     # Seguimiento de las combinaciones abiertas
     abiertas = db.paxg_simulaciones_abiertas()
