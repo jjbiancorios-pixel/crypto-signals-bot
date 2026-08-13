@@ -447,6 +447,27 @@ def _cmd_paxg() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_paxg_motivos() -> str:
+    """
+    12/08 — Desglosa los cierres de PAXG por motivo, con la fecha/hora del
+    cierre MÁS RECIENTE de cada uno. Sirve para verificar si el fix de
+    trailing (11/08) ya está actuando: si "tp" tiene un cierre con fecha
+    posterior al 11/08, el fix no se está aplicando ahí — no es solo
+    falta de operaciones nuevas.
+    """
+    resumen = db.resumen_por_motivo_cierre_paxg()
+    if not resumen:
+        return "🥇 PAXG — motivos de cierre: sin datos todavía."
+    lineas = ["🥇 <b>PAXG — cierres por motivo</b>"]
+    for motivo, d in resumen.items():
+        lineas.append(
+            f"{motivo}: n={d['n']} | resultado prom {d['resultado_prom_pct']}% | "
+            f"cierre más reciente: {d['cierre_mas_reciente']}"
+        )
+    lineas.append("\n⚠️ Si 'tp' tiene un cierre con fecha DESPUÉS de subir el fix de trailing (11/08), avisame — significa que no se está aplicando.")
+    return "\n".join(lineas)
+
+
 def _cmd_bingx() -> str:
     """
     05/08 — Resumen del cinturón de INVESTIGACIÓN BingX (order book
@@ -878,6 +899,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_simuladas()
     elif cmd == "/paxg":
         return _cmd_paxg()
+    elif cmd == "/paxg_motivos":
+        return _cmd_paxg_motivos()
     elif cmd == "/bingx":
         return _cmd_bingx()
     elif cmd == "/estrategias_imbalance":
@@ -939,6 +962,9 @@ def procesar_comando(texto: str) -> str:
             "/paxg\n"
             "  🥇 Cinturón PAXG/BTC en modo sombra — ranking de las 24\n"
             "  combinaciones (señal x riesgo x TP) probadas en paralelo.\n\n"
+            "/paxg_motivos\n"
+            "  🔍 Desglose de cierres de PAXG por motivo (tp/trailing/SL) —\n"
+            "  para verificar si el fix de trailing ya está aplicándose.\n\n"
             "/bingx\n"
             "  📡 Cinturón de investigación BingX (order book imbalance) —\n"
             "  % de acierto real por umbral, sin operar nada todavía.\n\n"

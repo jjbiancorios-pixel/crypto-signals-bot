@@ -2228,3 +2228,44 @@ def resumen_mae_paxg(desde_fecha: str = None) -> dict:
         "mae_perdedoras_promedio": round(sum(mae_perdedoras) / len(mae_perdedoras), 2) if mae_perdedoras else None,
         "confiable": len(filas) >= 50,
     }
+
+
+def resumen_por_motivo_cierre_paxg(desde_fecha: str = None) -> dict:
+    """
+    12/08 — Desglosa las combinaciones de PAXG cerradas por motivo (tp
+    viejo / trailing / stop_loss / cierre_intradia_forzado), con fecha del
+    cierre más reciente de cada motivo. Sirve para VERIFICAR si el fix de
+    trailing (11/08) ya está actuando de verdad — si siguen apareciendo
+    cierres "tp" con fecha POSTERIOR al 11/08, el fix no se está aplicando
+    a esas combinaciones (revisar despliegue), no es solo falta de datos
+    nuevos.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT motivo_cierre, resultado_pct, fecha, hora_cierre FROM paxg_simulaciones WHERE cerrada = 1"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {}
+
+    por_motivo = {}
+    for f in filas:
+        m = f["motivo_cierre"] or "desconocido"
+        por_motivo.setdefault(m, []).append(f)
+
+    resumen = {}
+    for motivo, lst in por_motivo.items():
+        resultados = [f["resultado_pct"] for f in lst if f["resultado_pct"] is not None]
+        fecha_mas_reciente = max(f["fecha"] for f in lst)
+        hora_mas_reciente = max((f["hora_cierre"] or "") for f in lst if f["fecha"] == fecha_mas_reciente)
+        resumen[motivo] = {
+            "n": len(lst),
+            "resultado_prom_pct": round(sum(resultados) / len(resultados), 3) if resultados else None,
+            "cierre_mas_reciente": f"{fecha_mas_reciente} {hora_mas_reciente}",
+        }
+    return resumen
