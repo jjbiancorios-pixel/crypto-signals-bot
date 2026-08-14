@@ -23,7 +23,7 @@ import pionex_api
 PAR_PAXG = "PAXGBTC"
 PAR_BTC = "BTCUSDT"
 
-APALANCAMIENTO = {"medio": 10}  # 14/08 (Opción 3 aplicada): se sacó "bajo" (5x) — generaba más del doble de cierres forzados por intradía que "medio" (n=38 vs n=17), sin mejor resultado promedio que lo compensara.
+APALANCAMIENTO = {"medio": 10, "alto": 15}  # 14/08 (Opción 3 aplicada): se sacó "bajo" (5x) — generaba más del doble de cierres forzados por intradía que "medio" (n=38 vs n=17), sin mejor resultado promedio que lo compensara. 14/08: se agrega "alto" (15x) EN PARALELO al 10x, para probar si un apalancamiento mayor reduce el problema de estancamiento (necesita menos movimiento real de precio para activar el trailing). ⚠️ No confirmado si Pionex permite 15x real en PAXG/BTC futuros — verificar antes de operar con capital real, esto es solo simulación.
 # 14/08 (Opción 2 aplicada): TP de activación de trailing específico por
 # señal, no uno único para las 3. Encontrado con /paxg_intradia: la señal
 # C resuelve rápido en cualquier TP (pocos cierres forzados, chicos); A y
