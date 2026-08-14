@@ -253,7 +253,16 @@ def analizar_y_simular():
                   "ema9": ema9, "ema21": ema21}
     senales = evaluar_senales(datos_paxg, estado_btc, tendencia_oro)
 
+    # 14/08 — Señal A (reversión a la media) RETIRADA: venía rindiendo peor
+    # que B y C de forma consistente (peor promedio ponderado del ranking,
+    # ver análisis del 14/08). Se sigue calculando en evaluar_senales() por
+    # si se quiere retomar más adelante con otro enfoque, pero no abre
+    # combinaciones nuevas.
+    SENALES_ACTIVAS = {"B", "C"}
+
     for tipo, direccion in senales.items():
+        if tipo not in SENALES_ACTIVAS:
+            continue
         if direccion and not db.paxg_hay_combos_abiertas_de(tipo):
             abrir_lote(tipo, direccion, precio_paxg_actual)
 
