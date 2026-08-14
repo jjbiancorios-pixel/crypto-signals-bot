@@ -468,6 +468,31 @@ def _cmd_paxg_motivos() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_paxg_intradia() -> str:
+    """
+    14/08 — Desglosa los cierres forzados por intradía (20hs, nunca
+    activaron trailing ni tocaron SL) por TP, riesgo, y combinación —
+    para ver dónde se concentran (hipótesis: TP altos y/o riesgo bajo,
+    que tardan más en activar el trailing).
+    """
+    por_tp_riesgo = db.resumen_intradia_forzado_paxg_por_tp_riesgo()
+    por_combo = db.resumen_intradia_forzado_paxg()
+    if not por_tp_riesgo:
+        return "🥇 PAXG — cierre intradía forzado: sin datos todavía."
+
+    lineas = ["🥇 <b>PAXG — cierres forzados por intradía (20hs)</b>\n"]
+    lineas.append("<b>Por TP (objetivo de activación del trailing):</b>")
+    for tp, d in por_tp_riesgo["por_tp"].items():
+        lineas.append(f"  TP{tp}: n={d['n']} | prom {d['prom']}%")
+    lineas.append("\n<b>Por riesgo:</b>")
+    for r, d in por_tp_riesgo["por_riesgo"].items():
+        lineas.append(f"  {r}: n={d['n']} | prom {d['prom']}%")
+    lineas.append("\n<b>Por combinación (todas):</b>")
+    for c in por_combo:
+        lineas.append(f"  {c['combinacion']}: n={c['n']} | prom {c['resultado_prom_pct']}%")
+    return "\n".join(lineas)
+
+
 def _cmd_paxg_version() -> str:
     """
     13/08 — Verifica DIRECTAMENTE qué código de paxg_bot.py está corriendo
@@ -923,6 +948,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_paxg()
     elif cmd == "/paxg_motivos":
         return _cmd_paxg_motivos()
+    elif cmd == "/paxg_intradia":
+        return _cmd_paxg_intradia()
     elif cmd == "/paxg_version":
         return _cmd_paxg_version()
     elif cmd == "/bingx":
@@ -989,6 +1016,9 @@ def procesar_comando(texto: str) -> str:
             "/paxg_motivos\n"
             "  🔍 Desglose de cierres de PAXG por motivo (tp/trailing/SL) —\n"
             "  para verificar si el fix de trailing ya está aplicándose.\n\n"
+            "/paxg_intradia\n"
+            "  ⏰ Desglose de cierres forzados por intradía (20hs) por TP,\n"
+            "  riesgo y combinación — para ver dónde se concentran.\n\n"
             "/paxg_version\n"
             "  🔧 Verifica directamente qué código de paxg_bot.py corre\n"
             "  en el servidor ahora — sin esperar a inferirlo de resultados.\n\n"

@@ -2269,3 +2269,63 @@ def resumen_por_motivo_cierre_paxg(desde_fecha: str = None) -> dict:
             "cierre_mas_reciente": f"{fecha_mas_reciente} {hora_mas_reciente}",
         }
     return resumen
+
+
+def resumen_intradia_forzado_paxg() -> list:
+    """
+    14/08 — Desglosa los cierres por "cierre_intradia_forzado" (posiciones
+    que nunca activaron el trailing ni tocaron SL, se cerraron a la fuerza
+    a las 20hs) por combinación — para ver si se concentran en TP altos
+    (más difícil de activar) o riesgo bajo (necesita mover más el precio
+    real para el mismo % apalancado).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT combinacion, senal_tipo, riesgo, tp_objetivo_pct, resultado_pct
+        FROM paxg_simulaciones
+        WHERE cerrada = 1 AND motivo_cierre = 'cierre_intradia_forzado'
+    """)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return []
+
+    por_combo = {}
+    for f in filas:
+        por_combo.setdefault(f["combinacion"], []).append(f["resultado_pct"])
+
+    resumen = []
+    for combo, resultados in por_combo.items():
+        resumen.append({
+            "combinacion": combo,
+            "n": len(resultados),
+            "resultado_prom_pct": round(sum(resultados) / len(resultados), 2),
+        })
+    resumen.sort(key=lambda x: -x["n"])
+    return resumen
+
+
+def resumen_intradia_forzado_paxg_por_tp_riesgo() -> dict:
+    """14/08 — Mismo análisis, pero agregado por TP y por riesgo (para ver el patrón general, no combo por combo)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT senal_tipo, riesgo, tp_objetivo_pct, resultado_pct
+        FROM paxg_simulaciones
+        WHERE cerrada = 1 AND motivo_cierre = 'cierre_intradia_forzado'
+    """)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {}
+
+    por_tp, por_riesgo = {}, {}
+    for f in filas:
+        por_tp.setdefault(f["tp_objetivo_pct"], []).append(f["resultado_pct"])
+        por_riesgo.setdefault(f["riesgo"], []).append(f["resultado_pct"])
+
+    return {
+        "por_tp": {tp: {"n": len(v), "prom": round(sum(v)/len(v), 2)} for tp, v in sorted(por_tp.items())},
+        "por_riesgo": {r: {"n": len(v), "prom": round(sum(v)/len(v), 2)} for r, v in por_riesgo.items()},
+    }
