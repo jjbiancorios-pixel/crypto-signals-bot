@@ -506,12 +506,14 @@ def _cmd_paxg_version() -> str:
     import paxg_bot
     tiene_comision = hasattr(paxg_bot, "COMISION_IDA_VUELTA_PCT")
     tiene_trailing = hasattr(paxg_bot, "RETROCESO_TRAILING_PCT")
+    tiene_tp_por_senal = hasattr(paxg_bot, "TP_POR_SENAL")
     return (
         f"🔧 <b>Versión real de paxg_bot.py en este servidor</b>\n"
         f"Comisión (COMISION_IDA_VUELTA_PCT): {paxg_bot.COMISION_IDA_VUELTA_PCT if tiene_comision else '❌ NO EXISTE — código viejo'}\n"
         f"Trailing (RETROCESO_TRAILING_PCT): {paxg_bot.RETROCESO_TRAILING_PCT if tiene_trailing else '❌ NO EXISTE — código viejo'}\n"
         f"Stop-loss (STOP_LOSS_PCT): {paxg_bot.STOP_LOSS_PCT}\n"
-        f"TP objetivos (ahora activadores de trailing): {paxg_bot.TP_OBJETIVOS}"
+        f"Apalancamiento (APALANCAMIENTO): {paxg_bot.APALANCAMIENTO}\n"
+        f"TP por señal (TP_POR_SENAL, 14/08): {paxg_bot.TP_POR_SENAL if tiene_tp_por_senal else '❌ NO EXISTE — código viejo (todavía 24 combinaciones)'}"
     )
 
 

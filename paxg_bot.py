@@ -23,8 +23,18 @@ import pionex_api
 PAR_PAXG = "PAXGBTC"
 PAR_BTC = "BTCUSDT"
 
-APALANCAMIENTO = {"bajo": 5, "medio": 10}
-TP_OBJETIVOS = [1.0, 2.0, 3.0, 5.0]  # % — rango 1-5% pedido por Juanjo
+APALANCAMIENTO = {"medio": 10}  # 14/08 (Opción 3 aplicada): se sacó "bajo" (5x) — generaba más del doble de cierres forzados por intradía que "medio" (n=38 vs n=17), sin mejor resultado promedio que lo compensara.
+# 14/08 (Opción 2 aplicada): TP de activación de trailing específico por
+# señal, no uno único para las 3. Encontrado con /paxg_intradia: la señal
+# C resuelve rápido en cualquier TP (pocos cierres forzados, chicos); A y
+# B se atascan mucho en TP3/TP5 (69% de los cierres forzados eran TP3+TP5,
+# y B concentraba la mayoría). Se limita A/B a TP1/TP2, se deja C con el
+# rango completo.
+TP_POR_SENAL = {
+    "A": [1.0, 2.0],
+    "B": [1.0, 2.0],
+    "C": [1.0, 2.0, 3.0, 5.0],
+}
 STOP_LOSS_PCT = -20.0  # mismo criterio que v16 (calibrado con datos propios más adelante)
 MAX_DURACION_HORAS = 20  # "intradía" — se fuerza el cierre si no cerró antes por TP/SL/trailing
 # 11/08 — El TP_OBJETIVOS ya no cierra directo: pasa a ser el punto donde
@@ -192,9 +202,14 @@ def evaluar_senales(datos_paxg, datos_btc_estado, tendencia_oro):
 
 
 def abrir_lote(senal_tipo, direccion, precio_entrada):
-    """Abre las 8 combinaciones (2 riesgo x 4 TP) de un tipo de señal."""
+    """
+    14/08: abre las combinaciones de un tipo de señal — ahora 2 para A/B
+    (solo TP1/TP2, riesgo medio) y 4 para C (TP1/2/3/5, riesgo medio),
+    tras aplicar las Opciones 2 y 3 del análisis de cierres forzados.
+    """
+    tps = TP_POR_SENAL.get(senal_tipo, [1.0, 2.0])
     for riesgo, apal in APALANCAMIENTO.items():
-        for tp in TP_OBJETIVOS:
+        for tp in tps:
             combinacion = f"{senal_tipo}_{riesgo}_TP{tp:g}"
             db.abrir_paxg_simulacion(combinacion, senal_tipo, riesgo, apal, tp, direccion, precio_entrada)
 
