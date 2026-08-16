@@ -711,6 +711,28 @@ def _cmd_mae() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_mae_profundidad() -> str:
+    """
+    15/08 — Agrupa las operaciones reales por qué tan profundo cayó el
+    peor punto (MAE) antes de resolverse, con duración y win rate por
+    franja — para analizar con datos si las caídas más profundas (ej.
+    6-8%) generan operaciones más largas, antes de definir un % óptimo
+    de corte distinto al -20% actual.
+    """
+    resumen = db.resumen_mae_por_profundidad()
+    if not resumen:
+        return "📉 MAE por profundidad: sin datos todavía (necesita operaciones cerradas con MAE negativo)."
+
+    lineas = ["📉 <b>MAE por profundidad de caída</b> (operaciones reales)\n"]
+    for r in resumen:
+        lineas.append(
+            f"{r['franja']}: n={r['n']} | duración prom {r['duracion_prom_min']}min "
+            f"(máx {r['duracion_max_min']}min) | win rate {r['win_rate_pct']}% (n={r['n_con_resultado']})"
+        )
+    lineas.append("\n💡 Buscá si la duración promedio sube junto con la franja — confirmaría el patrón que veniste notando.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -968,6 +990,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_griddinamico()
     elif cmd == "/mae":
         return _cmd_mae()
+    elif cmd == "/mae_profundidad":
+        return _cmd_mae_profundidad()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -1043,6 +1067,9 @@ def procesar_comando(texto: str) -> str:
             "  📐 Resumen del grid dinámico en modo sombra (regla DGT).\n\n"
             "/mae\n"
             "  📉 MAE/MFE + motivo de cierre, todo junto.\n\n"
+            "/mae_profundidad\n"
+            "  📉 MAE agrupado por franjas de profundidad, con duración y\n"
+            "  win rate — para analizar el % óptimo de corte del SL.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

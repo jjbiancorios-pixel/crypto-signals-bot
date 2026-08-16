@@ -2329,3 +2329,60 @@ def resumen_intradia_forzado_paxg_por_tp_riesgo() -> dict:
         "por_tp": {tp: {"n": len(v), "prom": round(sum(v)/len(v), 2)} for tp, v in sorted(por_tp.items())},
         "por_riesgo": {r: {"n": len(v), "prom": round(sum(v)/len(v), 2)} for r, v in por_riesgo.items()},
     }
+
+
+def resumen_mae_por_profundidad() -> list:
+    """
+    15/08 — Agrupa las operaciones REALES (senales) cerradas por qué tan
+    profundo cayó el peor punto (MAE) antes de resolverse, en franjas de
+    1 punto (0-1%, 1-2%, ..., hasta 20%+). Para cada franja: cuántas
+    operaciones, duración promedio, y qué % terminó ganando vs. perdiendo.
+    Objetivo: confirmar con datos si rangos de caída más profunda (ej.
+    6-8%) generan operaciones más largas, como viene notando Juanjo, antes
+    de definir un % óptimo de corte distinto al -20% actual.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT peor_resultado_pct, tiempo_real_min, resultado_pct
+        FROM senales
+        WHERE cerrado = 1 AND peor_resultado_pct IS NOT NULL AND peor_resultado_pct < 0
+    """)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return []
+
+    def franja(mae):
+        profundidad = abs(mae)
+        piso = int(profundidad)  # 0,1,2,...
+        if piso >= 20:
+            return "20%+"
+        return f"{piso}-{piso+1}%"
+
+    por_franja = {}
+    for f in filas:
+        clave = franja(f["peor_resultado_pct"])
+        por_franja.setdefault(clave, []).append(f)
+
+    def orden_franja(clave):
+        if clave == "20%+":
+            return 20
+        return int(clave.split("-")[0])
+
+    resumen = []
+    for clave in sorted(por_franja.keys(), key=orden_franja):
+        filas_franja = por_franja[clave]
+        n = len(filas_franja)
+        con_tiempo = [f["tiempo_real_min"] for f in filas_franja if f["tiempo_real_min"] is not None]
+        con_resultado = [f["resultado_pct"] for f in filas_franja if f["resultado_pct"] is not None]
+        ganadoras = [r for r in con_resultado if r > 0]
+        resumen.append({
+            "franja": clave,
+            "n": n,
+            "duracion_prom_min": round(sum(con_tiempo) / len(con_tiempo), 1) if con_tiempo else None,
+            "duracion_max_min": max(con_tiempo) if con_tiempo else None,
+            "win_rate_pct": round(len(ganadoras) / len(con_resultado) * 100, 1) if con_resultado else None,
+            "n_con_resultado": len(con_resultado),
+        })
+    return resumen
