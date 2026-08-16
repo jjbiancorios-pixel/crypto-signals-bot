@@ -46,18 +46,34 @@ def inicializar_offset_telegram():
     llegar a lo reciente). Al arrancar, ahora se descartan los updates
     viejos pendientes y se arranca escuchando solo desde el más reciente
     — llamar UNA vez al inicio del bot, antes del loop principal.
+
+    16/08 (FIX 2, el primero se quedaba corto): getUpdates devuelve COMO
+    MÁXIMO 100 mensajes por llamada — si el backlog acumulado tenía más
+    de 100 (muy posible, con semanas de comandos), UNA sola llamada no
+    alcanzaba a vaciarlo del todo, dejaba igual una cola larga sin que lo
+    notáramos. Ahora insiste en un loop, pidiendo cada vez desde el
+    último id+1, hasta que la respuesta viene VACÍA — recién ahí sabemos
+    que se vació todo el backlog de verdad.
     """
     global _ultimo_update_id
-    data = _api("getUpdates", timeout=1)
-    if data.get("ok"):
+    total_descartados = 0
+    intentos = 0
+    while intentos < 50:  # tope de seguridad — no debería hacer falta, pero evita un loop infinito si algo sale mal
+        intentos += 1
+        data = _api("getUpdates", offset=_ultimo_update_id + 1, timeout=1)
+        if not data.get("ok"):
+            print(f"⚠️ inicializar_offset_telegram: no se pudo consultar getUpdates (intento {intentos}) — {str(data)[:200]}")
+            break
         updates = data.get("result", [])
-        if updates:
-            _ultimo_update_id = max(u["update_id"] for u in updates)
-            print(f"📡 Telegram: descartados {len(updates)} update(s) viejo(s) del backlog al arrancar — escuchando desde ahora.")
-        else:
-            print("📡 Telegram: sin backlog pendiente al arrancar.")
+        if not updates:
+            break  # backlog vacío de verdad, ya estamos al día
+        _ultimo_update_id = max(u["update_id"] for u in updates)
+        total_descartados += len(updates)
+
+    if total_descartados:
+        print(f"📡 Telegram: descartados {total_descartados} update(s) viejo(s) del backlog en {intentos} tanda(s) — escuchando desde ahora (update_id={_ultimo_update_id}).")
     else:
-        print(f"⚠️ inicializar_offset_telegram: no se pudo consultar getUpdates al arrancar — {str(data)[:200]}")
+        print("📡 Telegram: sin backlog pendiente al arrancar.")
 
 
 def _api(method: str, **params):
