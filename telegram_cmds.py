@@ -1168,6 +1168,13 @@ def revisar_updates():
     global _ultimo_update_id
     data = _api("getUpdates", offset=_ultimo_update_id + 1, timeout=5)
     if not data.get("ok"):
+        # 16/08 (FIX): antes esto quedaba en silencio total — si Telegram
+        # rechaza el getUpdates (ej. "Conflict: terminated by other
+        # getUpdates request", típico de 2 instancias del bot corriendo
+        # a la vez), no había forma de saberlo. Caso real: varios comandos
+        # (incluido /ayuda) dejaron de responder sin ningún rastro en los
+        # logs hasta agregar esto.
+        print(f"⚠️ revisar_updates: Telegram getUpdates falló — {str(data)[:300]}")
         return
     for update in data.get("result", []):
         _ultimo_update_id = max(_ultimo_update_id, update["update_id"])
