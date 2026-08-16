@@ -1045,11 +1045,20 @@ def _chequeo_btc_rapido():
 def main():
     db.init_db()
     print(f"🤖 Bot v16 iniciado — {len(PARES)} pares")
+    # 16/08 (FIX): antes decía "7:00-23:00" y "Capital 35%" fijos en el
+    # texto, sin importar los valores reales — quedaron desactualizados
+    # (automatización activa corre 24hs, no 7-23; capital real es 42.5%
+    # desde el 01/08, no 35%). Ahora se arma dinámico desde las variables
+    # reales, para que no vuelva a desactualizarse solo.
+    horario_real = "24hs (0:00-23:59)" if AUTOMATIZACION_ACTIVA else "7:00-22:59 ARG"
+    capital_pct = gestion_riesgo.PCT_CAPITAL_POR_OPERACION * 100
+    margen_pct = gestion_riesgo.RATIO_MARGEN_ORIGEN * 100
+    inversion_pct = 100 - margen_pct
     enviar_telegram(
         f"🤖 <b>JJ Cripto Bot v16 iniciado</b>\n"
         f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
-        f"⏰ 7:00-23:00 ARG | cada 15 min (:03, :18, :33, :48)\n"
-        f"💰 Capital 35%x2 posiciones | margen 90/10 | 10x fijo\n"
+        f"⏰ {horario_real} | cada 15 min (:03, :18, :33, :48)\n"
+        f"💰 Capital {capital_pct:.1f}%x2 posiciones | margen {inversion_pct:.0f}/{margen_pct:.0f} | 10x fijo\n"
         f"🛑 Stop-loss {gestion_riesgo.STOP_LOSS_PCT}% | TP fijo 1.35%\n"
         f"📐 Piso de grilla por ADX (6%/7.5%/9%) | Reapertura menos de 5min\n"
         f"🔬 Modo sombra: multi-tf, ADX, volumen, VWAP, CCI, OBV, grid dinámico\n"
