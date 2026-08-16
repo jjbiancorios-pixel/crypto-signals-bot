@@ -1152,7 +1152,12 @@ def procesar_comando(texto: str) -> str:
             "  🔍 Busca a demanda las mejores candidatas ahora mismo (no abre nada).\n"
             "  Tarda un rato (recorre ~80 pares). Ej: /escanear 5"
         )
-    return None
+    # 16/08 (FIX): antes, un comando que no coincidía exacto con ninguno
+    # de los de arriba devolvía None en silencio — sin error, sin aviso,
+    # nada. Caso real: /rapidas_vs_extensas "no respondía" y después de
+    # mucho investigar resultó ser probablemente un typo al escribirlo.
+    # Ahora avisa explícitamente si el comando no se reconoce.
+    return f"⚠️ No reconozco el comando \"{cmd}\" — ¿fue un error de tipeo? Mandá /ayuda para ver la lista completa."
 
 
 def revisar_updates():
