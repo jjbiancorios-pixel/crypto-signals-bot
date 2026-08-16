@@ -2386,3 +2386,89 @@ def resumen_mae_por_profundidad() -> list:
             "n_con_resultado": len(con_resultado),
         })
     return resumen
+
+
+def resumen_operaciones_toco_umbral(umbral_pct: float = -1.5) -> dict:
+    """
+    16/08 — Análisis preliminar (con los datos que YA tenemos, antes de la
+    recolección más precisa de v17): filtra operaciones reales cerradas
+    que en algún momento tocaron un MAE igual o peor que umbral_pct, y
+    muestra qué pasó después (resultado final, duración TOTAL de la
+    operación — no el tiempo específico desde que tocó el umbral, ese dato
+    más fino recién se junta desde v17).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT par, resultado_pct, tiempo_real_min, peor_resultado_pct
+        FROM senales
+        WHERE cerrado = 1 AND peor_resultado_pct IS NOT NULL AND peor_resultado_pct <= ?
+        ORDER BY peor_resultado_pct ASC
+    """, (umbral_pct,))
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    con_resultado = [f for f in filas if f["resultado_pct"] is not None]
+    ganadoras = [f for f in con_resultado if f["resultado_pct"] > 0]
+    con_tiempo = [f["tiempo_real_min"] for f in filas if f["tiempo_real_min"] is not None]
+
+    return {
+        "total": len(filas),
+        "n_con_resultado": len(con_resultado),
+        "ganadoras": len(ganadoras),
+        "perdedoras": len(con_resultado) - len(ganadoras),
+        "win_rate_pct": round(len(ganadoras) / len(con_resultado) * 100, 1) if con_resultado else None,
+        "duracion_prom_min": round(sum(con_tiempo) / len(con_tiempo), 1) if con_tiempo else None,
+        "duracion_max_min": max(con_tiempo) if con_tiempo else None,
+        "resultado_prom_pct": round(sum(f["resultado_pct"] for f in con_resultado) / len(con_resultado), 2) if con_resultado else None,
+        "detalle": filas[:15],  # las 15 más profundas, para inspección directa
+    }
+
+
+def resumen_rapidas_vs_extensas(umbrales: list = None) -> dict:
+    """
+    16/08 — Para cada umbral de MAE (1.5%, 6%, 7.5% por default), separa
+    las operaciones que lo tocaron en 2 grupos:
+    - "rápidas": recuperaron a positivo en MENOS de 10hs (600 min)
+    - "extensas": todo lo demás (tardaron 10hs+ aunque hayan ganado, o
+      nunca recuperaron)
+    Con datos YA existentes (no depende de la recolección nueva de v17).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    resultado = {}
+    if umbrales is None:
+        umbrales = [1.5, 6.0, 7.5]
+
+    for umbral in umbrales:
+        cur.execute("""
+            SELECT par, resultado_pct, tiempo_real_min, peor_resultado_pct
+            FROM senales
+            WHERE cerrado = 1 AND peor_resultado_pct IS NOT NULL AND peor_resultado_pct <= ?
+        """, (-abs(umbral),))
+        filas = [dict(f) for f in cur.fetchall()]
+
+        rapidas = [f for f in filas if f["resultado_pct"] is not None and f["resultado_pct"] > 0
+                   and f["tiempo_real_min"] is not None and f["tiempo_real_min"] < 600]
+        extensas = [f for f in filas if f not in rapidas]
+
+        def stats(grupo):
+            if not grupo:
+                return {"n": 0}
+            tiempos = [f["tiempo_real_min"] for f in grupo if f["tiempo_real_min"] is not None]
+            resultados = [f["resultado_pct"] for f in grupo if f["resultado_pct"] is not None]
+            return {
+                "n": len(grupo),
+                "duracion_prom_min": round(sum(tiempos) / len(tiempos), 1) if tiempos else None,
+                "resultado_prom_pct": round(sum(resultados) / len(resultados), 2) if resultados else None,
+            }
+
+        resultado[umbral] = {
+            "total": len(filas),
+            "rapidas": stats(rapidas),
+            "extensas": stats(extensas),
+        }
+    conn.close()
+    return resultado

@@ -733,6 +733,62 @@ def _cmd_mae_profundidad() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_toco_umbral(args: list) -> str:
+    """
+    16/08 — Análisis PRELIMINAR (con datos ya existentes, antes de la
+    recolección más precisa que arranca con v17) de operaciones que
+    tocaron un MAE igual o peor que el umbral dado (default -1.5%): qué
+    pasó después, resultado final y duración TOTAL de la operación.
+    Uso: /toco_umbral [umbral, default -1.5]
+    """
+    umbral = -1.5
+    if args:
+        try:
+            umbral = -abs(float(args[0]))
+        except ValueError:
+            return "⚠️ Umbral inválido. Ejemplo: /toco_umbral -1.5"
+
+    r = db.resumen_operaciones_toco_umbral(umbral)
+    if r.get("total", 0) == 0:
+        return f"📊 Operaciones que tocaron {umbral}% o peor: sin datos todavía."
+
+    lineas = [
+        f"📊 <b>Operaciones que tocaron {umbral}% o peor</b> (análisis preliminar, datos existentes)\n",
+        f"Total: {r['total']} | ✅ {r['ganadoras']} ganadoras / ❌ {r['perdedoras']} perdedoras",
+        f"Win rate: {r['win_rate_pct']}% | Resultado promedio final: {r['resultado_prom_pct']}%",
+        f"Duración TOTAL promedio: {r['duracion_prom_min']}min (máx {r['duracion_max_min']}min)",
+        "\n⚠️ La duración es de la operación COMPLETA, no desde que tocó el umbral — ese dato más fino recién se junta desde v17.",
+        "\n<b>Detalle (las 15 más profundas):</b>",
+    ]
+    for f in r["detalle"]:
+        resultado = f["resultado_pct"]
+        resultado_str = f"{resultado:+.2f}%" if resultado is not None else "sin dato"
+        lineas.append(f"{f['par']}: peor {f['peor_resultado_pct']:.2f}% | cerró {resultado_str} | {f['tiempo_real_min']}min")
+    return "\n".join(lineas)
+
+
+def _cmd_rapidas_vs_extensas() -> str:
+    """
+    16/08 — Separa, para los umbrales 1.5%/6%/7.5%, las operaciones que
+    recuperaron RÁPIDO (menos de 10hs, positivas) de las que se volvieron
+    EXTENSAS (10hs+, o nunca recuperaron). Con datos ya existentes.
+    """
+    r = db.resumen_rapidas_vs_extensas()
+    if all(d["total"] == 0 for d in r.values()):
+        return "📊 Rápidas vs. extensas: sin datos todavía."
+
+    lineas = ["📊 <b>Rápidas (<10hs, positivas) vs. Extensas</b>\n"]
+    for umbral, d in r.items():
+        if d["total"] == 0:
+            continue
+        rap, ext = d["rapidas"], d["extensas"]
+        lineas.append(f"<b>Tocaron -{umbral}% o peor</b> (total {d['total']}):")
+        lineas.append(f"  ✅ Rápidas: n={rap['n']} | dur.prom {rap.get('duracion_prom_min')}min | resultado {rap.get('resultado_prom_pct')}%")
+        lineas.append(f"  🐢 Extensas: n={ext['n']} | dur.prom {ext.get('duracion_prom_min')}min | resultado {ext.get('resultado_prom_pct')}%\n")
+    lineas.append("⚠️ Con poca muestra todavía, no saques conclusiones firmes — ver si el patrón se sostiene con más datos.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -992,6 +1048,10 @@ def procesar_comando(texto: str) -> str:
         return _cmd_mae()
     elif cmd == "/mae_profundidad":
         return _cmd_mae_profundidad()
+    elif cmd == "/toco_umbral":
+        return _cmd_toco_umbral(args)
+    elif cmd == "/rapidas_vs_extensas":
+        return _cmd_rapidas_vs_extensas()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -1070,6 +1130,12 @@ def procesar_comando(texto: str) -> str:
             "/mae_profundidad\n"
             "  📉 MAE agrupado por franjas de profundidad, con duración y\n"
             "  win rate — para analizar el % óptimo de corte del SL.\n\n"
+            "/toco_umbral [umbral]\n"
+            "  📊 Operaciones que tocaron un MAE igual o peor al umbral\n"
+            "  (default -1.5%) — análisis preliminar con datos existentes.\n\n"
+            "/rapidas_vs_extensas\n"
+            "  📊 Separa operaciones que tocaron -1.5/-6/-7.5% en rápidas\n"
+            "  (<10hs, positivas) vs. extensas — datos ya existentes.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"
