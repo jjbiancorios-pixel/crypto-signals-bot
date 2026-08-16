@@ -34,6 +34,32 @@ CHAT_ID = os.environ.get("CHAT_ID", "")
 _ultimo_update_id = 0
 
 
+def inicializar_offset_telegram():
+    """
+    16/08 (FIX CRÍTICO) — _ultimo_update_id vivía solo en memoria (RAM),
+    se reseteaba a 0 en cada reinicio del bot. Con muchos redeploys
+    seguidos (como pasó hoy, varias subidas en poco tiempo), el bot
+    intentaba re-procesar TODO el historial de mensajes viejos desde el
+    inicio de la cuenta — dejando los comandos NUEVOS (ej. /ayuda) en
+    cola detrás de un backlog gigante, sin ningún error visible (cada
+    getUpdates individual funcionaba bien, solo que tardaba muchísimo en
+    llegar a lo reciente). Al arrancar, ahora se descartan los updates
+    viejos pendientes y se arranca escuchando solo desde el más reciente
+    — llamar UNA vez al inicio del bot, antes del loop principal.
+    """
+    global _ultimo_update_id
+    data = _api("getUpdates", timeout=1)
+    if data.get("ok"):
+        updates = data.get("result", [])
+        if updates:
+            _ultimo_update_id = max(u["update_id"] for u in updates)
+            print(f"📡 Telegram: descartados {len(updates)} update(s) viejo(s) del backlog al arrancar — escuchando desde ahora.")
+        else:
+            print("📡 Telegram: sin backlog pendiente al arrancar.")
+    else:
+        print(f"⚠️ inicializar_offset_telegram: no se pudo consultar getUpdates al arrancar — {str(data)[:200]}")
+
+
 def _api(method: str, **params):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
     try:

@@ -1045,6 +1045,11 @@ def _chequeo_btc_rapido():
 def main():
     db.init_db()
     print(f"🤖 Bot v16 iniciado — {len(PARES)} pares")
+    # 16/08 (FIX CRÍTICO): descarta el backlog viejo de Telegram al
+    # arrancar — antes cada reinicio hacía que los comandos nuevos
+    # quedaran en cola detrás de mensajes de semanas atrás, sin ningún
+    # error visible (ver telegram_cmds.inicializar_offset_telegram).
+    telegram_cmds.inicializar_offset_telegram()
     # 16/08 (FIX): antes decía "7:00-23:00" y "Capital 35%" fijos en el
     # texto, sin importar los valores reales — quedaron desactualizados
     # (automatización activa corre 24hs, no 7-23; capital real es 42.5%
