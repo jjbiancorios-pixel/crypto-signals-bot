@@ -622,26 +622,32 @@ def listar_grillas_abiertas() -> list:
     corriendo en Pionex sin que nuestra base la rastreara, invisible al
     stop-loss, por varios días. Devuelve lista de dicts con al menos
     'buOrderId' y 'symbol', o None si falla la consulta.
+
+    16/08 (FIX): el filtro `type=futures_grid` en la query causaba
+    INVALID_SIGNATURE real en producción (motivo exacto no confirmado —
+    la doc dice "puede pasar múltiples valores", puede que Pionex espere
+    un formato de array distinto al que mandábamos). Se saca el filtro de
+    la query (el ejemplo oficial de Pionex solo lleva timestamp) y se
+    filtra futures_grid del lado de Python, sobre la respuesta completa.
     """
     path = "/api/v1/bot/orders"
-    query = "type=futures_grid"
-    timestamp, firma = _firmar("GET", path, query)
+    timestamp, firma = _firmar("GET", path, "")
     headers = {"PIONEX-KEY": PIONEX_API_KEY, "PIONEX-SIGNATURE": firma}
-    url = f"{PIONEX_BASE_URL}{path}?{query}&timestamp={timestamp}"
+    url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         data = resp.json()
         if not data.get("result"):
             print(f"⚠️ listar_grillas_abiertas: Pionex respondió result=false: {str(data)[:200]}")
             return None
-        ordenes = data.get("data", {}).get("orders")
-        if ordenes is None:
-            ordenes = data.get("data", []) if isinstance(data.get("data"), list) else []
-        # Solo las que siguen corriendo de verdad (nombres de campo a
-        # confirmar contra la API real — se prueban ambos por las dudas).
+        # 16/08: corregido según doc oficial — el campo real es
+        # "results" (no "orders" como se asumía antes sin confirmar), y
+        # cada orden trae "buOrderType" para filtrar futures_grid.
+        ordenes = data.get("data", {}).get("results", [])
         abiertas = [
             o for o in ordenes
-            if str(o.get("status", o.get("state", ""))).lower() in ("running", "trading")
+            if o.get("buOrderType") == "futures_grid"
+            and str(o.get("status", "")).lower() in ("running", "trading")
         ]
         return abiertas
     except Exception as e:

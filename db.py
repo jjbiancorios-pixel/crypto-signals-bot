@@ -2450,9 +2450,14 @@ def resumen_rapidas_vs_extensas(umbrales: list = None) -> dict:
         """, (-abs(umbral),))
         filas = [dict(f) for f in cur.fetchall()]
 
-        rapidas = [f for f in filas if f["resultado_pct"] is not None and f["resultado_pct"] > 0
-                   and f["tiempo_real_min"] is not None and f["tiempo_real_min"] < 600]
-        extensas = [f for f in filas if f not in rapidas]
+        rapidas_idx = set()
+        rapidas = []
+        for i, f in enumerate(filas):
+            if (f["resultado_pct"] is not None and f["resultado_pct"] > 0
+                    and f["tiempo_real_min"] is not None and f["tiempo_real_min"] < 600):
+                rapidas.append(f)
+                rapidas_idx.add(i)
+        extensas = [f for i, f in enumerate(filas) if i not in rapidas_idx]
 
         def stats(grupo):
             if not grupo:
