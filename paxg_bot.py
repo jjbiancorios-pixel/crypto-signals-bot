@@ -35,6 +35,13 @@ TP_POR_SENAL = {
     "B": [1.0, 2.0],
     "C": [1.0, 2.0, 3.0, 5.0],
 }
+# 14/08 — Señal A (reversión a la media) RETIRADA: venía rindiendo peor
+# que B y C de forma consistente (peor promedio ponderado del ranking).
+# Se sigue calculando en evaluar_senales() por si se quiere retomar más
+# adelante con otro enfoque, pero no abre combinaciones nuevas. A nivel
+# de módulo (no local a la función) a propósito, para poder verificarla
+# desde afuera con /paxg_version.
+SENALES_ACTIVAS = {"B", "C"}
 STOP_LOSS_PCT = -20.0  # mismo criterio que v16 (calibrado con datos propios más adelante)
 MAX_DURACION_HORAS = 20  # "intradía" — se fuerza el cierre si no cerró antes por TP/SL/trailing
 # 11/08 — El TP_OBJETIVOS ya no cierra directo: pasa a ser el punto donde
@@ -252,13 +259,6 @@ def analizar_y_simular():
                   "adx": adx_info["adx"], "plus_di": adx_info["plus_di"], "minus_di": adx_info["minus_di"],
                   "ema9": ema9, "ema21": ema21}
     senales = evaluar_senales(datos_paxg, estado_btc, tendencia_oro)
-
-    # 14/08 — Señal A (reversión a la media) RETIRADA: venía rindiendo peor
-    # que B y C de forma consistente (peor promedio ponderado del ranking,
-    # ver análisis del 14/08). Se sigue calculando en evaluar_senales() por
-    # si se quiere retomar más adelante con otro enfoque, pero no abre
-    # combinaciones nuevas.
-    SENALES_ACTIVAS = {"B", "C"}
 
     for tipo, direccion in senales.items():
         if tipo not in SENALES_ACTIVAS:
