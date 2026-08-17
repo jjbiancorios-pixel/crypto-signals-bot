@@ -819,7 +819,7 @@ def _cmd_rapidas_vs_extensas() -> str:
     if all(d["total"] == 0 for d in r.values()):
         return "📊 Rápidas vs. extensas: sin datos todavía."
 
-    lineas = ["📊 <b>Rápidas (<10hs, positivas) vs. Extensas</b>\n"]
+    lineas = ["📊 <b>Rápidas (menos de 10hs, positivas) vs. Extensas</b>\n"]
     for umbral, d in r.items():
         if d["total"] == 0:
             continue
@@ -1177,7 +1177,7 @@ def procesar_comando(texto: str) -> str:
             "  (default -1.5%) — análisis preliminar con datos existentes.\n\n"
             "/rapidas_vs_extensas\n"
             "  📊 Separa operaciones que tocaron -1.5/-6/-7.5% en rápidas\n"
-            "  (<10hs, positivas) vs. extensas — datos ya existentes.\n\n"
+            "  (menos de 10hs, positivas) vs. extensas — datos ya existentes.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"
