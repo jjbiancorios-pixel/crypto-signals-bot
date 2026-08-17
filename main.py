@@ -154,12 +154,24 @@ def _velas_binance(par, tf, n):
     for c in ["open","high","low","close","vol"]: df[c] = df[c].astype(float)
     return df
 
-def get_velas(par, tf, n=100):
+def get_velas(par, tf, n=100, verbose=False):
+    """17/08: mismo agregado que get_precio() — ver ese docstring."""
     for f in (_velas_bybit, _velas_okx, _velas_binance):
+        nombre_fuente = f.__name__.replace("_velas_", "")
         try:
             df = f(par, tf, n)
-            if df is not None and len(df) >= 20: return df
-        except: continue
+            if df is not None and len(df) >= 20:
+                if verbose:
+                    print(f"🕯️ {par} ({tf}): velas de {nombre_fuente}, última close={df['close'].iloc[-1]}")
+                return df
+            if verbose:
+                print(f"🕯️ {par} ({tf}): {nombre_fuente} devolvió datos insuficientes")
+        except Exception as e:
+            if verbose:
+                print(f"🕯️ {par} ({tf}): {nombre_fuente} falló — {e}")
+            continue
+    if verbose:
+        print(f"🕯️ {par} ({tf}): las 3 fuentes fallaron, sin velas.")
     return None
 
 def _precio_bybit(par):
@@ -178,12 +190,31 @@ def _precio_binance(par):
     r = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={par}", timeout=6)
     return float(r.json()["price"])
 
-def get_precio(par):
+def get_precio(par, verbose=False):
+    """
+    17/08: agregado parámetro verbose — antes cualquier fallo de cada
+    fuente (Bybit/OKX/Binance) se tragaba en silencio (except: continue),
+    sin dejar rastro de qué pasó ni qué valor devolvió cada una. Caso
+    real: XMRUSDT abrió con un rango totalmente desconectado del precio
+    real, sin forma de reconstruir después qué fuente dio el dato malo.
+    Con verbose=True, loguea cada intento (fuente + resultado).
+    """
     for f in (_precio_bybit, _precio_okx, _precio_binance):
+        nombre_fuente = f.__name__.replace("_precio_", "")
         try:
             p = f(par)
-            if p and p > 0: return p
-        except: continue
+            if p and p > 0:
+                if verbose:
+                    print(f"💲 {par}: precio de {nombre_fuente} = {p}")
+                return p
+            if verbose:
+                print(f"💲 {par}: {nombre_fuente} devolvió valor inválido ({p})")
+        except Exception as e:
+            if verbose:
+                print(f"💲 {par}: {nombre_fuente} falló — {e}")
+            continue
+    if verbose:
+        print(f"💲 {par}: las 3 fuentes fallaron, sin precio.")
     return None
 
 
@@ -591,6 +622,18 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
 
     if score<MIN_SCORE_ALTA: return None
 
+    # 17/08: la señal calificó (score>=11) — recién ACÁ vale la pena
+    # loguear el detalle completo de la cascada de precio (fuente que
+    # respondió + valor), para no saturar los logs con los ~90 pares que
+    # no califican en cada ciclo. Consulta extra (no reemplaza el precio
+    # ya usado arriba, es solo para dejar rastro diagnóstico) — caso real
+    # que motivó esto: XMRUSDT abrió con un rango totalmente desconectado
+    # del precio real, sin ningún rastro de qué fuente dio el dato malo.
+    try:
+        get_precio(par, verbose=True)
+    except Exception as e:
+        print(f"⚠️ {par}: falló el logging verbose de precio — {e}")
+
     pct=score/16*100
     direccion="📈 LARGO" if es_largo else "📉 CORTO"
 
@@ -692,16 +735,17 @@ def _abrir_grilla_automatica(r: dict, check: dict):
     reusarla también desde intentar_reapertura() sin duplicar el código.
     """
     # 17/08 (FIX DE SEGURIDAD): caso real XMRUSDT — el precio usado para
-    # calcular el rango vino mal (probablemente un dato viejo/cacheado de
-    # un exchange que ya no lista el par — XMR está delistado en Binance
-    # y OKX desde 2024, 2 de los 3 de nuestra cascada), armando un rango
-    # ~3.5x por debajo del precio real. La grilla se abrió igual, fuera de
-    # rango desde el minuto uno. Antes de abrir CUALQUIER grilla real,
-    # ahora se verifica el precio de mercado ACTUAL (consulta fresca,
-    # independiente del que se usó para calcular el rango) — si está muy
-    # lejos del rango calculado, se aborta en vez de abrir una posición
-    # rota. Tolerancia amplia (no ajustada) para no bloquear casos
-    # legítimos de rangos angostos con movimiento normal de precio.
+    # calcular el rango vino mal por una causa que no se pudo confirmar
+    # (la hipótesis inicial de que XMR estaba delistado de Binance/OKX
+    # resultó ser FALSA, Juanjo lo confirmó viendo el par listado en vivo
+    # — no repetir esa explicación). Se agregó logging detallado de la
+    # cascada de precios (ver get_precio/get_velas, verbose=True) para
+    # diagnosticar mejor si vuelve a pasar. Mientras tanto, esta
+    # verificación de seguridad queda como protección independiente de
+    # la causa real: antes de abrir CUALQUIER grilla real, se verifica el
+    # precio de mercado ACTUAL (consulta fresca, independiente del que se
+    # usó para calcular el rango) — si está muy lejos del rango
+    # calculado, se aborta en vez de abrir una posición rota.
     try:
         precio_real_actual = pionex_api.obtener_precio_mercado(r["par"])
     except Exception:
@@ -717,35 +761,53 @@ def _abrir_grilla_automatica(r: dict, check: dict):
                 f"al armar la señal (ver caso real XMRUSDT). NO se abrió la grilla. Revisar el par manualmente."
             )
 
-    try:
-        # Antes se usaba row=67 fijo, ignorando el cálculo propio de
-        # r["grillas"] (rango_pct/0.20, adaptado por volatilidad). Corregido
-        # 22/07: validado con fees reales de Pionex (maker 0.02%) que 67 fijo
-        # da un espaciado de apenas 1.1x la fee ida-y-vuelta en rangos
-        # angostos (3%) — casi sin margen real. La fórmula propia da 5x la
-        # fee siempre, sea cual sea el ancho.
-        resp = pionex_api.crear_grilla_futuros(
-            par=r["par"].replace("USDT", ""),
-            top=r["rango_alto"],
-            bottom=r["rango_bajo"],
-            row=r["grillas"],
-            capital_usdt=check["inversion_real"],
-            leverage=10,  # FIJO: decisión confirmada, siempre 10x
-            trend="long" if r["direccion"] == "📈 LARGO" else "short",
-            extra_margin_usdt=check["margen_origen"],
-        )
-        bu_order_id = resp.get("data", {}).get("buOrderId")
-        if bu_order_id:
-            mensaje = (
-                f"✅ Grilla abierta automáticamente "
-                f"(USD {check['inversion_real']:.2f} inversión + "
-                f"USD {check['margen_origen']:.2f} margen, "
-                f"USD {check['capital_operacion']:.2f} total)"
+    # 17/08 — Reintento automático ante BOT_INTERNAL_ERROR de Pionex (caso
+    # real: INJUSDT, señal de score 11/16 perdida por completo porque
+    # Pionex devolvió un error interno puntual y transitorio del lado de
+    # ELLOS, no un problema de nuestros datos). 2 reintentos más, con una
+    # pausa corta entre cada uno, antes de dar la señal por perdida.
+    MAX_INTENTOS_APERTURA = 3
+    for intento in range(1, MAX_INTENTOS_APERTURA + 1):
+        try:
+            # Antes se usaba row=67 fijo, ignorando el cálculo propio de
+            # r["grillas"] (rango_pct/0.20, adaptado por volatilidad). Corregido
+            # 22/07: validado con fees reales de Pionex (maker 0.02%) que 67 fijo
+            # da un espaciado de apenas 1.1x la fee ida-y-vuelta en rangos
+            # angostos (3%) — casi sin margen real. La fórmula propia da 5x la
+            # fee siempre, sea cual sea el ancho.
+            resp = pionex_api.crear_grilla_futuros(
+                par=r["par"].replace("USDT", ""),
+                top=r["rango_alto"],
+                bottom=r["rango_bajo"],
+                row=r["grillas"],
+                capital_usdt=check["inversion_real"],
+                leverage=10,  # FIJO: decisión confirmada, siempre 10x
+                trend="long" if r["direccion"] == "📈 LARGO" else "short",
+                extra_margin_usdt=check["margen_origen"],
             )
-            return bu_order_id, mensaje
-        return None, f"⚠️ Pionex no devolvió buOrderId: {resp}"
-    except Exception as e:
-        return None, f"⚠️ Error al abrir grilla automática: {e}"
+            bu_order_id = resp.get("data", {}).get("buOrderId")
+            if bu_order_id:
+                mensaje = (
+                    f"✅ Grilla abierta automáticamente "
+                    f"(USD {check['inversion_real']:.2f} inversión + "
+                    f"USD {check['margen_origen']:.2f} margen, "
+                    f"USD {check['capital_operacion']:.2f} total)"
+                    + (f" — tras {intento} intentos" if intento > 1 else "")
+                )
+                return bu_order_id, mensaje
+
+            codigo_error = resp.get("code", "")
+            if codigo_error == "BOT_INTERNAL_ERROR" and intento < MAX_INTENTOS_APERTURA:
+                print(f"⚠️ {r['par']}: BOT_INTERNAL_ERROR de Pionex (intento {intento}/{MAX_INTENTOS_APERTURA}), reintentando en 3s...")
+                time.sleep(3)
+                continue
+            return None, f"⚠️ Pionex no devolvió buOrderId tras {intento} intento(s): {resp}"
+        except Exception as e:
+            if intento < MAX_INTENTOS_APERTURA:
+                print(f"⚠️ {r['par']}: error al abrir grilla (intento {intento}/{MAX_INTENTOS_APERTURA}) — {e}, reintentando en 3s...")
+                time.sleep(3)
+                continue
+            return None, f"⚠️ Error al abrir grilla automática tras {intento} intento(s): {e}"
 
 
 def intentar_reapertura(candidato: dict):
