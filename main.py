@@ -691,6 +691,32 @@ def _abrir_grilla_automatica(r: dict, check: dict):
     bu_order_id es None si falló. Extraída de generar_alertas() en v16 para
     reusarla también desde intentar_reapertura() sin duplicar el código.
     """
+    # 17/08 (FIX DE SEGURIDAD): caso real XMRUSDT — el precio usado para
+    # calcular el rango vino mal (probablemente un dato viejo/cacheado de
+    # un exchange que ya no lista el par — XMR está delistado en Binance
+    # y OKX desde 2024, 2 de los 3 de nuestra cascada), armando un rango
+    # ~3.5x por debajo del precio real. La grilla se abrió igual, fuera de
+    # rango desde el minuto uno. Antes de abrir CUALQUIER grilla real,
+    # ahora se verifica el precio de mercado ACTUAL (consulta fresca,
+    # independiente del que se usó para calcular el rango) — si está muy
+    # lejos del rango calculado, se aborta en vez de abrir una posición
+    # rota. Tolerancia amplia (no ajustada) para no bloquear casos
+    # legítimos de rangos angostos con movimiento normal de precio.
+    try:
+        precio_real_actual = pionex_api.obtener_precio_mercado(r["par"])
+    except Exception:
+        precio_real_actual = None
+    if precio_real_actual is not None:
+        margen_tolerancia = (r["rango_alto"] - r["rango_bajo"])  # mismo ancho del rango, de colchón extra a cada lado
+        piso_aceptable = r["rango_bajo"] - margen_tolerancia
+        techo_aceptable = r["rango_alto"] + margen_tolerancia
+        if not (piso_aceptable <= precio_real_actual <= techo_aceptable):
+            return None, (
+                f"🚨 ABORTADO — el precio real de mercado ({precio_real_actual}) está muy lejos del "
+                f"rango calculado ({r['rango_bajo']}-{r['rango_alto']}) — probable dato de precio erróneo "
+                f"al armar la señal (ver caso real XMRUSDT). NO se abrió la grilla. Revisar el par manualmente."
+            )
+
     try:
         # Antes se usaba row=67 fijo, ignorando el cálculo propio de
         # r["grillas"] (rango_pct/0.20, adaptado por volatilidad). Corregido
