@@ -352,6 +352,12 @@ def init_db():
             creado TEXT NOT NULL
         )
     """)
+    # 18/08 — checkpoint intermedio (10hs) para el cierre por intradía de
+    # PAXG: si ya se evaluó, no volver a evaluar cada ciclo (1=sí).
+    try:
+        cur.execute("ALTER TABLE paxg_simulaciones ADD COLUMN checkpoint_intermedio_evaluado INTEGER DEFAULT 0")
+    except Exception:
+        pass  # ya existe
 
     # 05/08 — Cinturón BingX (investigación, modo sombra puro, SIN operar
     # todavía): recolecta order book imbalance + indicadores de velas
@@ -2760,3 +2766,12 @@ def comparar_real_vs_bloqueadas(desde_fecha: str = "20260803") -> dict:
         }
 
     return {"reales": stats(reales), "bloqueadas": stats(bloqueadas), "desde_fecha": desde_fecha}
+
+
+def marcar_checkpoint_intermedio_paxg(sim_id: int):
+    """18/08 — marca que ya se evaluó el checkpoint intermedio (10hs) de una simulación PAXG."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE paxg_simulaciones SET checkpoint_intermedio_evaluado = 1 WHERE id = ?", (sim_id,))
+    conn.commit()
+    conn.close()

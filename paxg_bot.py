@@ -44,6 +44,13 @@ TP_POR_SENAL = {
 SENALES_ACTIVAS = {"B", "C"}
 STOP_LOSS_PCT = -20.0  # mismo criterio que v16 (calibrado con datos propios más adelante)
 MAX_DURACION_HORAS = 20  # "intradía" — se fuerza el cierre si no cerró antes por TP/SL/trailing
+# 18/08 — Opción 1 confirmada por Juanjo: en vez de esperar ciegamente a
+# las 20hs, se evalúa en un checkpoint intermedio (10hs) si vale la pena
+# seguir esperando o cortar antes — mismos 4 factores técnicos que ya
+# usamos en v17 para el lado de pérdida de v16 (RSI, ADX, Bollinger,
+# estado de BTC). Motivo: el cierre forzado por intradía es el 59% de
+# todos los cierres post-fix, arrastrando el resultado neto a negativo.
+CHECKPOINT_INTERMEDIO_HORAS = 10
 # 11/08 — El TP_OBJETIVOS ya no cierra directo: pasa a ser el punto donde
 # se ACTIVA el trailing. Una vez activado, cierra si el resultado
 # retrocede este % del máximo alcanzado (proporcional, no puntos fijos —
@@ -221,6 +228,52 @@ def abrir_lote(senal_tipo, direccion, precio_entrada):
             db.abrir_paxg_simulacion(combinacion, senal_tipo, riesgo, apal, tp, direccion, precio_entrada)
 
 
+def _evaluar_factores_tecnicos_paxg(direccion: str) -> dict:
+    """
+    18/08 — Mismos 4 factores técnicos que v17 (v16 principal), aplicados
+    acá al checkpoint intermedio (10hs) de PAXG: RSI en sobreventa/
+    sobrecompra a favor de reversión, ADX bajando, precio tocó banda de
+    Bollinger contraria, BTC no refuerza el movimiento en contra.
+    OJO: PAXG/BTC se mueve INVERSO a BTC (rotación risk-on/risk-off) —
+    por eso el factor 4 está invertido respecto de v16/v17: BTC ALCISTA
+    (risk-on) es lo que perjudica a una posición LARGA en PAXG/BTC, no
+    BAJISTA como en un par cripto normal.
+    """
+    try:
+        df15 = get_velas("PAXGBTC", "15m", n=40)
+        if df15 is None or len(df15) < 30:
+            return {"factores_cumplidos": 0, "error": "sin velas suficientes"}
+        df_btc = get_velas("BTCUSDT", "15m", n=20)
+
+        rsi = calc_rsi(df15["close"])
+        bb = calc_bb(df15["close"])
+        precio_actual = float(df15["close"].iloc[-1])
+        ancho_banda = bb["upper"] - bb["lower"]
+        pos_banda = (precio_actual - bb["lower"]) / ancho_banda if ancho_banda > 0 else 0.5
+        adx_reciente = calc_adx(df15.tail(20))["adx"]
+        adx_anterior = calc_adx(df15.iloc[-28:-8])["adx"]
+        adx_bajando = adx_reciente < adx_anterior
+        estado_btc = calc_estado_btc_simple(df_btc) if df_btc is not None else "SIN_DATO"
+
+        es_largo = direccion == "LARGO"
+        if es_largo:
+            f1 = rsi <= 32
+            f3 = pos_banda <= 0.10
+            f4 = estado_btc != "ALCISTA"  # BTC alcista (risk-on) perjudica al LARGO en PAXG/BTC (inverso)
+        else:
+            f1 = rsi >= 68
+            f3 = pos_banda >= 0.90
+            f4 = estado_btc != "BAJISTA"
+        f2 = adx_bajando
+
+        return {
+            "factores_cumplidos": sum([f1, f2, f3, f4]), "rsi": rsi, "adx": adx_reciente,
+            "adx_bajando": adx_bajando, "estado_btc": estado_btc, "toco_banda_contraria": f3,
+        }
+    except Exception as e:
+        return {"factores_cumplidos": 0, "error": str(e)}
+
+
 def analizar_y_simular():
     """
     Función principal — se llama periódicamente desde main.py. Loguea el
@@ -302,6 +355,20 @@ def analizar_y_simular():
         try:
             apertura = datetime.strptime(f"{combo['fecha']} {combo['hora_apertura']}", "%Y%m%d %H:%M").replace(tzinfo=db.TZ_ARG)
             horas_abierta = (datetime.now(db.TZ_ARG) - apertura).total_seconds() / 3600
+
+            # 18/08 — checkpoint intermedio (10hs): antes de esperar
+            # ciegamente a las 20hs, evaluar si los factores técnicos
+            # favorecen cortar antes. Se evalúa UNA sola vez por
+            # combinación (no en cada ciclo de 15 min).
+            if (horas_abierta >= CHECKPOINT_INTERMEDIO_HORAS
+                    and not combo.get("checkpoint_intermedio_evaluado")):
+                analisis = _evaluar_factores_tecnicos_paxg(combo["direccion"])
+                factores = analisis.get("factores_cumplidos", 0)
+                db.marcar_checkpoint_intermedio_paxg(combo["id"])
+                if factores < 3:
+                    db.cerrar_paxg_simulacion(combo["id"], resultado, motivo="checkpoint_intermedio")
+                    continue
+
             if horas_abierta >= MAX_DURACION_HORAS:
                 db.cerrar_paxg_simulacion(combo["id"], resultado, motivo="cierre_intradia_forzado")
         except Exception:
