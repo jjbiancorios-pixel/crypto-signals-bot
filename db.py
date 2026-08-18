@@ -2721,3 +2721,42 @@ def resumen_motivo_no_apertura() -> dict:
             "resultado_prom_pct": round(sum(f["resultado_pct"] for f in cerradas) / len(cerradas), 2) if cerradas else None,
         }
     return {"total": len(filas), "por_categoria": resumen}
+
+
+def comparar_real_vs_bloqueadas(desde_fecha: str = "20260803") -> dict:
+    """
+    18/08 — Compara lado a lado el rendimiento REAL (operaciones que sí
+    se abrieron con capital de verdad) contra el de las señales que
+    calificaron pero se quedaron SIN LUGAR (simuladas, motivo distinto
+    de score_bajo_*) — mismo período, para saber si el costo de
+    oportunidad de los slots bloqueados es real o solo una casualidad
+    de muestra chica.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT resultado_pct FROM senales
+        WHERE cerrado = 1 AND resultado_pct IS NOT NULL AND fecha >= ?
+    """, (desde_fecha,))
+    reales = [dict(f)["resultado_pct"] for f in cur.fetchall()]
+
+    cur.execute("""
+        SELECT resultado_pct FROM senales_simuladas
+        WHERE cerrada = 1 AND resultado_pct IS NOT NULL AND fecha >= ?
+              AND motivo_no_apertura IS NOT NULL AND motivo_no_apertura NOT LIKE 'score_bajo_%'
+    """, (desde_fecha,))
+    bloqueadas = [dict(f)["resultado_pct"] for f in cur.fetchall()]
+    conn.close()
+
+    def stats(lst):
+        if not lst:
+            return {"n": 0}
+        ganadoras = [r for r in lst if r > 0]
+        return {
+            "n": len(lst),
+            "win_rate_pct": round(len(ganadoras) / len(lst) * 100, 1),
+            "resultado_prom_pct": round(sum(lst) / len(lst), 2),
+        }
+
+    return {"reales": stats(reales), "bloqueadas": stats(bloqueadas), "desde_fecha": desde_fecha}

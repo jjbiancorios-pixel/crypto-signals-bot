@@ -902,6 +902,34 @@ def _cmd_motivo_no_apertura() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_comparar_bloqueadas() -> str:
+    """
+    18/08 — Pone lado a lado el rendimiento REAL vs. el de las señales
+    que se quedaron sin lugar (mismo período, desde el 03/08) — para no
+    tener que comparar los números a mano entre 2 comandos distintos.
+    """
+    r = db.comparar_real_vs_bloqueadas()
+    reales, bloqueadas = r["reales"], r["bloqueadas"]
+    if reales.get("n", 0) == 0 and bloqueadas.get("n", 0) == 0:
+        return "📊 Comparación: sin datos todavía."
+
+    lineas = [f"📊 <b>Real vs. Bloqueadas por falta de lugar</b> (desde el {r['desde_fecha']})\n"]
+    lineas.append(f"💰 <b>Real</b> (con capital): n={reales.get('n',0)} | win rate {reales.get('win_rate_pct','—')}% | resultado prom {reales.get('resultado_prom_pct','—')}%")
+    lineas.append(f"🚫 <b>Bloqueadas</b> (sin lugar): n={bloqueadas.get('n',0)} | win rate {bloqueadas.get('win_rate_pct','—')}% | resultado prom {bloqueadas.get('resultado_prom_pct','—')}%")
+
+    if reales.get("n", 0) >= 5 and bloqueadas.get("n", 0) >= 5:
+        diferencia = bloqueadas["resultado_prom_pct"] - reales["resultado_prom_pct"]
+        if diferencia > 0.3:
+            lineas.append(f"\n💡 Las bloqueadas rinden {diferencia:+.2f} puntos MÁS que las reales — el costo de oportunidad de los 2 slots parece real, no una casualidad de muestra chica.")
+        elif diferencia < -0.3:
+            lineas.append(f"\n💡 Las bloqueadas rinden {diferencia:+.2f} puntos MENOS que las reales — no hay evidencia de que perderse esas señales sea un problema grande.")
+        else:
+            lineas.append(f"\n💡 Rinden parecido ({diferencia:+.2f} puntos de diferencia) — sin señal clara todavía.")
+    else:
+        lineas.append("\n⚠️ Muestra todavía chica en alguno de los 2 grupos — esperar más datos antes de sacar conclusiones firmes.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -1171,6 +1199,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_near_miss()
     elif cmd == "/motivo_no_apertura":
         return _cmd_motivo_no_apertura()
+    elif cmd == "/comparar_bloqueadas":
+        return _cmd_comparar_bloqueadas()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -1264,6 +1294,9 @@ def procesar_comando(texto: str) -> str:
             "/motivo_no_apertura\n"
             "  📊 Señales que SÍ calificaron pero se quedaron sin lugar,\n"
             "  con datos ya acumulados desde el 03/08 — costo de oportunidad.\n\n"
+            "/comparar_bloqueadas\n"
+            "  📊 Rendimiento real vs. bloqueadas por falta de lugar, lado\n"
+            "  a lado, mismo período — con lectura automática incluida.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"
