@@ -23,26 +23,29 @@ import pionex_api
 PAR_PAXG = "PAXGBTC"
 PAR_BTC = "BTCUSDT"
 
-APALANCAMIENTO = {"medio": 10, "alto": 15}  # 14/08 (Opción 3 aplicada): se sacó "bajo" (5x) — generaba más del doble de cierres forzados por intradía que "medio" (n=38 vs n=17), sin mejor resultado promedio que lo compensara. 14/08: se agrega "alto" (15x) EN PARALELO al 10x, para probar si un apalancamiento mayor reduce el problema de estancamiento (necesita menos movimiento real de precio para activar el trailing). ⚠️ No confirmado si Pionex permite 15x real en PAXG/BTC futuros — verificar antes de operar con capital real, esto es solo simulación.
-# 14/08 (Opción 2 aplicada): TP de activación de trailing específico por
-# señal, no uno único para las 3. Encontrado con /paxg_intradia: la señal
-# C resuelve rápido en cualquier TP (pocos cierres forzados, chicos); A y
-# B se atascan mucho en TP3/TP5 (69% de los cierres forzados eran TP3+TP5,
-# y B concentraba la mayoría). Se limita A/B a TP1/TP2, se deja C con el
-# rango completo.
-TP_POR_SENAL = {
-    "A": [1.0, 2.0],
-    "B": [1.0, 2.0],
-    "C": [1.0, 2.0, 3.0, 5.0],
+APALANCAMIENTO = {"bajo": 5, "medio": 10, "alto": 15}  # 18/08: "bajo" (5x) RESTAURADO, pero solo para C (ver COMBOS_ACTIVAS) — es la única combinación de "bajo" con evidencia real a favor (C_bajo_TP1 +1.16%, C_bajo_TP2 +1.81%, ambas n=7). ⚠️ 15x sin confirmar si Pionex lo permite real en PAXG/BTC — solo simulación.
+# 18/08 — Reemplaza el viejo cruce APALANCAMIENTO×TP_POR_SENAL por
+# combinaciones EXPLÍCITAS (señal, riesgo) -> lista de TP, porque ahora
+# necesitamos que C_bajo tenga un TP distinto (solo TP1/TP2) que
+# C_medio/C_alto (TP1/2/3/5) — algo que el cruce genérico no permitía
+# expresar. Señal A queda AFUERA por completo (retirada 14/08, expectancy
+# ponderada ~0% en sus 8 combinaciones — no hay evidencia real a favor).
+COMBOS_ACTIVAS = {
+    ("B", "medio"): [1.0, 2.0],
+    ("B", "alto"): [1.0, 2.0],
+    ("C", "medio"): [1.0, 2.0, 3.0, 5.0],
+    ("C", "alto"): [1.0, 2.0, 3.0, 5.0],
+    ("C", "bajo"): [1.0, 2.0],  # 18/08: reactivado, único "bajo" activo
 }
-# 14/08 — Señal A (reversión a la media) RETIRADA: venía rindiendo peor
-# que B y C de forma consistente (peor promedio ponderado del ranking).
-# Se sigue calculando en evaluar_senales() por si se quiere retomar más
-# adelante con otro enfoque, pero no abre combinaciones nuevas. A nivel
-# de módulo (no local a la función) a propósito, para poder verificarla
-# desde afuera con /paxg_version.
 SENALES_ACTIVAS = {"B", "C"}
-STOP_LOSS_PCT = -20.0  # mismo criterio que v16 (calibrado con datos propios más adelante)
+STOP_LOSS_PCT = -20.0  # SL "original" — sigue siendo el que usa C_bajo (5x), no participa del experimento de abajo
+# 18/08 (Opción 2, 3 variantes) — SL más ajustado, corriendo en PARALELO
+# al original, aplicado SOLO a las combinaciones de riesgo medio/alto
+# (10x/15x) — C_bajo (5x) no participa de este experimento, sigue con
+# el STOP_LOSS_PCT de siempre. Motivo: el SL de -20% es el que más pesa
+# individualmente en el resultado negativo actual (-20.72% promedio
+# cuando dispara, ver análisis del 18/08).
+VARIANTES_SL_MEDIO_ALTO = {"sl10": -10.0, "sl13": -13.0, "sl16": -16.0}
 MAX_DURACION_HORAS = 20  # "intradía" — se fuerza el cierre si no cerró antes por TP/SL/trailing
 # 18/08 — Opción 1 confirmada por Juanjo: en vez de esperar ciegamente a
 # las 20hs, se evalúa en un checkpoint intermedio (10hs) si vale la pena
@@ -217,15 +220,23 @@ def evaluar_senales(datos_paxg, datos_btc_estado, tendencia_oro):
 
 def abrir_lote(senal_tipo, direccion, precio_entrada):
     """
-    14/08: abre las combinaciones de un tipo de señal — ahora 2 para A/B
-    (solo TP1/TP2, riesgo medio) y 4 para C (TP1/2/3/5, riesgo medio),
-    tras aplicar las Opciones 2 y 3 del análisis de cierres forzados.
+    18/08: usa COMBOS_ACTIVAS (señal,riesgo)->TPs, explícito. Para
+    riesgo medio/alto, cada combinación se abre 3 veces (una por cada
+    variante de SL de VARIANTES_SL_MEDIO_ALTO) — riesgo bajo (solo
+    C_bajo) usa el STOP_LOSS_PCT original, sin variantes.
     """
-    tps = TP_POR_SENAL.get(senal_tipo, [1.0, 2.0])
-    for riesgo, apal in APALANCAMIENTO.items():
+    for (senal, riesgo), tps in COMBOS_ACTIVAS.items():
+        if senal != senal_tipo:
+            continue
+        apal = APALANCAMIENTO[riesgo]
         for tp in tps:
-            combinacion = f"{senal_tipo}_{riesgo}_TP{tp:g}"
-            db.abrir_paxg_simulacion(combinacion, senal_tipo, riesgo, apal, tp, direccion, precio_entrada)
+            if riesgo == "bajo":
+                combinacion = f"{senal_tipo}_{riesgo}_TP{tp:g}"
+                db.abrir_paxg_simulacion(combinacion, senal_tipo, riesgo, apal, tp, direccion, precio_entrada, sl_pct=STOP_LOSS_PCT)
+            else:
+                for etiqueta_sl, valor_sl in VARIANTES_SL_MEDIO_ALTO.items():
+                    combinacion = f"{senal_tipo}_{riesgo}_TP{tp:g}_{etiqueta_sl}"
+                    db.abrir_paxg_simulacion(combinacion, senal_tipo, riesgo, apal, tp, direccion, precio_entrada, sl_pct=valor_sl)
 
 
 def _evaluar_factores_tecnicos_paxg(direccion: str) -> dict:
@@ -349,7 +360,10 @@ def analizar_y_simular():
             if resultado <= umbral_cierre:
                 db.cerrar_paxg_simulacion(combo["id"], resultado, motivo="trailing")
                 continue
-        if resultado <= STOP_LOSS_PCT:
+        sl_aplicable = combo.get("sl_pct")
+        if sl_aplicable is None:
+            sl_aplicable = STOP_LOSS_PCT  # compatibilidad con combinaciones viejas sin sl_pct guardado
+        if resultado <= sl_aplicable:
             db.cerrar_paxg_simulacion(combo["id"], resultado, motivo="stop_loss")
             continue
         try:

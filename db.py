@@ -358,6 +358,14 @@ def init_db():
         cur.execute("ALTER TABLE paxg_simulaciones ADD COLUMN checkpoint_intermedio_evaluado INTEGER DEFAULT 0")
     except Exception:
         pass  # ya existe
+    # 18/08 — SL específico por combinación (antes era un único valor
+    # global -20% para todas). Necesario para las 3 variantes de SL que
+    # se prueban en paralelo (Opción 2). NULL = usa el STOP_LOSS_PCT
+    # global de siempre (compatibilidad con combinaciones viejas).
+    try:
+        cur.execute("ALTER TABLE paxg_simulaciones ADD COLUMN sl_pct REAL")
+    except Exception:
+        pass  # ya existe
 
     # 05/08 — Cinturón BingX (investigación, modo sombra puro, SIN operar
     # todavía): recolecta order book imbalance + indicadores de velas
@@ -1796,19 +1804,19 @@ def guardar_paxg_mercado_log(datos: dict):
 
 def abrir_paxg_simulacion(combinacion: str, senal_tipo: str, riesgo: str,
                             apalancamiento: int, tp_objetivo_pct: float,
-                            direccion: str, precio_entrada: float) -> int:
-    """04/08 — Abre una de las 24 combinaciones simuladas."""
+                            direccion: str, precio_entrada: float, sl_pct: float = None) -> int:
+    """04/08 — Abre una de las combinaciones simuladas. 18/08: sl_pct opcional (None = usa el global de siempre)."""
     conn = _conn()
     cur = conn.cursor()
     ahora = datetime.now(TZ_ARG)
     cur.execute("""
         INSERT INTO paxg_simulaciones
             (combinacion, senal_tipo, riesgo, apalancamiento, tp_objetivo_pct,
-             direccion, precio_entrada, fecha, hora_apertura, creado)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+             direccion, precio_entrada, fecha, hora_apertura, creado, sl_pct)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
     """, (
         combinacion, senal_tipo, riesgo, apalancamiento, tp_objetivo_pct,
-        direccion, precio_entrada, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), ahora.isoformat(),
+        direccion, precio_entrada, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), ahora.isoformat(), sl_pct,
     ))
     conn.commit()
     sim_id = cur.lastrowid

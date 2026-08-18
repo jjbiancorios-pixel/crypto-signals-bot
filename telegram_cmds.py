@@ -548,16 +548,18 @@ def _cmd_paxg_version() -> str:
     import paxg_bot
     tiene_comision = hasattr(paxg_bot, "COMISION_IDA_VUELTA_PCT")
     tiene_trailing = hasattr(paxg_bot, "RETROCESO_TRAILING_PCT")
-    tiene_tp_por_senal = hasattr(paxg_bot, "TP_POR_SENAL")
+    tiene_combos_activas = hasattr(paxg_bot, "COMBOS_ACTIVAS")
     tiene_senales_activas = hasattr(paxg_bot, "SENALES_ACTIVAS")
+    tiene_variantes_sl = hasattr(paxg_bot, "VARIANTES_SL_MEDIO_ALTO")
     return (
         f"🔧 <b>Versión real de paxg_bot.py en este servidor</b>\n"
         f"Comisión (COMISION_IDA_VUELTA_PCT): {paxg_bot.COMISION_IDA_VUELTA_PCT if tiene_comision else '❌ NO EXISTE — código viejo'}\n"
         f"Trailing (RETROCESO_TRAILING_PCT): {paxg_bot.RETROCESO_TRAILING_PCT if tiene_trailing else '❌ NO EXISTE — código viejo'}\n"
-        f"Stop-loss (STOP_LOSS_PCT): {paxg_bot.STOP_LOSS_PCT}\n"
+        f"Stop-loss original (STOP_LOSS_PCT): {paxg_bot.STOP_LOSS_PCT}\n"
         f"Apalancamiento (APALANCAMIENTO): {paxg_bot.APALANCAMIENTO}\n"
-        f"TP por señal (TP_POR_SENAL, 14/08): {paxg_bot.TP_POR_SENAL if tiene_tp_por_senal else '❌ NO EXISTE — código viejo (todavía 24 combinaciones)'}\n"
-        f"Señales activas (SENALES_ACTIVAS, 14/08): {paxg_bot.SENALES_ACTIVAS if tiene_senales_activas else '❌ NO EXISTE — código viejo (señal A sigue abriendo)'}"
+        f"Combos activas (COMBOS_ACTIVAS, 18/08): {paxg_bot.COMBOS_ACTIVAS if tiene_combos_activas else '❌ NO EXISTE — código viejo'}\n"
+        f"Variantes de SL medio/alto (VARIANTES_SL_MEDIO_ALTO, 18/08): {paxg_bot.VARIANTES_SL_MEDIO_ALTO if tiene_variantes_sl else '❌ NO EXISTE — código viejo'}\n"
+        f"Señales activas (SENALES_ACTIVAS): {paxg_bot.SENALES_ACTIVAS if tiene_senales_activas else '❌ NO EXISTE — código viejo (señal A sigue abriendo)'}"
     )
 
 
