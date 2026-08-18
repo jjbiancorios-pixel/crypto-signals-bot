@@ -2670,3 +2670,54 @@ def resumen_near_miss(desde_fecha: str = None) -> dict:
             "resultado_prom_pct": round(sum(f["resultado_pct"] for f in cerradas) / len(cerradas), 2) if cerradas else None,
         }
     return {"total": len(filas), "por_score": resumen}
+
+
+def resumen_motivo_no_apertura() -> dict:
+    """
+    18/08 — Analiza los datos YA acumulados desde el 03/08 en
+    senales_simuladas por motivo de no apertura, agrupando por CATEGORÍA
+    (el texto real varía por los números dinámicos que cada motivo
+    incluye) — excluye los "score_bajo_*" de hoy (recién empiezan,
+    todavía no sirven para conclusión). Sirve para el pendiente de costo
+    de oportunidad de slot bloqueado: ¿qué tan bien les hubiera ido a las
+    señales que SÍ calificaron (score≥11) pero se quedaron sin lugar?
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT motivo_no_apertura, resultado_pct, cerrada
+        FROM senales_simuladas
+        WHERE motivo_no_apertura IS NOT NULL AND motivo_no_apertura NOT LIKE 'score_bajo_%'
+    """)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    def categorizar(motivo):
+        if "Tope de posiciones simultáneas" in motivo:
+            return "tope_posiciones"
+        if "Ya se abrió" in motivo:
+            return "tope_ciclo"
+        if "Modo restrictivo" in motivo:
+            return "modo_restrictivo"
+        if "Capital operativo insuficiente" in motivo:
+            return "capital_insuficiente"
+        return "otro"
+
+    por_categoria = {}
+    for f in filas:
+        cat = categorizar(f["motivo_no_apertura"] or "")
+        por_categoria.setdefault(cat, []).append(f)
+
+    resumen = {}
+    for cat, lst in por_categoria.items():
+        cerradas = [f for f in lst if f["cerrada"] == 1 and f["resultado_pct"] is not None]
+        ganadoras = [f for f in cerradas if f["resultado_pct"] > 0]
+        resumen[cat] = {
+            "n_total": len(lst),
+            "n_cerradas": len(cerradas),
+            "win_rate_pct": round(len(ganadoras) / len(cerradas) * 100, 1) if cerradas else None,
+            "resultado_prom_pct": round(sum(f["resultado_pct"] for f in cerradas) / len(cerradas), 2) if cerradas else None,
+        }
+    return {"total": len(filas), "por_categoria": resumen}

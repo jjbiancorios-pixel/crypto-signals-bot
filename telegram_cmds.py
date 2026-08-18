@@ -874,6 +874,34 @@ def _cmd_near_miss() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_motivo_no_apertura() -> str:
+    """
+    18/08 — Analiza los datos YA acumulados desde el 03/08 (no espera a
+    nada nuevo): cómo les fue a las señales que SÍ calificaron pero se
+    quedaron sin lugar, agrupadas por el motivo real (tope de posiciones,
+    tope de aperturas por ciclo, modo restrictivo, capital insuficiente).
+    """
+    r = db.resumen_motivo_no_apertura()
+    if r.get("total", 0) == 0:
+        return "📊 Motivo de no apertura: sin datos todavía."
+
+    nombres = {
+        "tope_posiciones": "Tope de 2 posiciones simultáneas",
+        "tope_ciclo": "Tope de aperturas por ciclo",
+        "modo_restrictivo": "Modo restrictivo (atascadas)",
+        "capital_insuficiente": "Capital operativo insuficiente",
+        "otro": "Otro motivo",
+    }
+    lineas = [f"📊 <b>Señales que calificaron pero se quedaron sin lugar</b> (total {r['total']}, desde el 03/08)\n"]
+    for cat, d in r["por_categoria"].items():
+        lineas.append(
+            f"<b>{nombres.get(cat, cat)}</b>: n={d['n_total']} | cerradas={d['n_cerradas']} | "
+            f"win rate {d['win_rate_pct']}% | resultado prom {d['resultado_prom_pct']}%"
+        )
+    lineas.append("\n💡 Si el win rate/resultado acá es parecido o mejor que el real, confirma que el costo de oportunidad de los slots bloqueados es real.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -1141,6 +1169,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_distribucion_scores()
     elif cmd == "/near_miss":
         return _cmd_near_miss()
+    elif cmd == "/motivo_no_apertura":
+        return _cmd_motivo_no_apertura()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -1231,6 +1261,9 @@ def procesar_comando(texto: str) -> str:
             "/near_miss\n"
             "  📊 Seguimiento simulado de señales con score 9-10 (no\n"
             "  llegaron a 11) — si hubiera valido la pena bajar el umbral.\n\n"
+            "/motivo_no_apertura\n"
+            "  📊 Señales que SÍ calificaron pero se quedaron sin lugar,\n"
+            "  con datos ya acumulados desde el 03/08 — costo de oportunidad.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"
