@@ -620,7 +620,14 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     if vol_r>=1.2: score+=1; razones.append(f"✅ Volumen: {vol_r:.1f}x")
     elif vol_r>=0.7: score+=1; razones.append(f"⚡ Volumen normal: {vol_r:.1f}x")
 
-    if score<MIN_SCORE_ALTA: return None
+    if score<MIN_SCORE_ALTA:
+        # 18/08 — antes se descartaba en silencio, sin dejar ningún rastro
+        # de cuánto le faltó ni qué criterio falló. Ahora devuelve info
+        # liviana para el análisis de "por qué tan pocas señales" — el
+        # caller decide qué hacer según el score (log liviano para todas,
+        # seguimiento simulado completo para las que casi llegan).
+        return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion_cand,
+                "razones": razones, "btc_estado": btc.get("estado"), "precio": precio}
 
     # 17/08: la señal calificó (score>=11) — recién ACÁ vale la pena
     # loguear el detalle completo de la cascada de precio (fuente que
@@ -847,7 +854,7 @@ def intentar_reapertura(candidato: dict):
         enviar_telegram(msg)
         return
 
-    if r is None:
+    if r is None or (isinstance(r, dict) and r.get("no_califico")):
         msg = f"🔁 {par}: no se reabre — ya no cumple score≥11 con las condiciones actuales."
         print(f"  {msg}")
         enviar_telegram(msg)
@@ -949,7 +956,23 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
         for par in PARES:
             try:
                 r=analizar_par(par,btc,forzar_corto,forzar_largo)
-                if r: resultados.append(r)
+                if r and not r.get("no_califico"):
+                    resultados.append(r)
+                elif r and r.get("no_califico"):
+                    # 18/08 — investigación de por qué hay pocas señales:
+                    # log liviano de CUALQUIER score (todos los 94 pares,
+                    # todos los ciclos), y seguimiento simulado completo
+                    # (con TP/SL, igual que las que sí califican pero se
+                    # quedan sin capital) para las que casi llegan (9-10),
+                    # para ver si hubiera valido la pena bajar el umbral.
+                    db.guardar_score_completo(par, r["score"], r.get("direccion_candidata"),
+                                               r.get("btc_estado"), r.get("razones"))
+                    if r["score"] in (9, 10):
+                        db.guardar_senal_simulada(
+                            {"par": par, "direccion": r["direccion_candidata"], "precio": r["precio"],
+                             "apal": 10, "score": r["score"], "razones": r.get("razones")},
+                            motivo_no_apertura=f"score_bajo_{r['score']}"
+                        )
             except Exception as e:
                 print(f"  Error {par}: {e}")
             time.sleep(0.08)
@@ -1086,7 +1109,7 @@ def resumen_matutino():
         for par in PARES:
             try:
                 r=analizar_par(par,btc)
-                if r: candidatos.append(r)
+                if r and not r.get("no_califico"): candidatos.append(r)
             except: pass
             time.sleep(0.08)
 

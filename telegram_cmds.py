@@ -833,6 +833,47 @@ def _cmd_rapidas_vs_extensas() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_distribucion_scores() -> str:
+    """
+    18/08 — Distribución del score de TODOS los pares en cada ciclo (no
+    solo los que califican) — para investigar por qué hay pocas señales.
+    """
+    r = db.resumen_distribucion_scores()
+    if r.get("total", 0) == 0:
+        return "📊 Distribución de scores: sin datos todavía."
+
+    lineas = [f"📊 <b>Distribución de scores</b> ({r['total']} lecturas)\n"]
+    lineas.append(f"Score promedio general: {r['score_promedio']}\n")
+    lineas.append("<b>Por score:</b>")
+    for score, n in r["distribucion"].items():
+        pct = round(n / r["total"] * 100, 1)
+        lineas.append(f"  {score}: n={n} ({pct}%)")
+    lineas.append("\n<b>Score promedio según estado de BTC:</b>")
+    for estado, d in r["por_btc_estado"].items():
+        lineas.append(f"  {estado}: prom {d['score_promedio']} (n={d['n']})")
+    return "\n".join(lineas)
+
+
+def _cmd_near_miss() -> str:
+    """
+    18/08 — Resultado del seguimiento simulado de señales "near-miss"
+    (score 9 o 10, no llegaron a 11) — para ver si bajar el umbral
+    hubiera sido rentable.
+    """
+    r = db.resumen_near_miss()
+    if r.get("total", 0) == 0:
+        return "📊 Near-miss (score 9-10): sin datos todavía."
+
+    lineas = [f"📊 <b>Near-miss — señales con score 9-10</b> (total {r['total']})\n"]
+    for score, d in sorted(r["por_score"].items()):
+        lineas.append(
+            f"Score {score}: n={d['n_total']} | cerradas={d['n_cerradas']} | "
+            f"win rate {d['win_rate_pct']}% | resultado prom {d['resultado_prom_pct']}%"
+        )
+    lineas.append("\n⚠️ Simulado (sin capital real) — con poca muestra, no es definitivo todavía.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -1096,6 +1137,10 @@ def procesar_comando(texto: str) -> str:
         return _cmd_toco_umbral(args)
     elif cmd == "/rapidas_vs_extensas":
         return _cmd_rapidas_vs_extensas()
+    elif cmd == "/distribucion_scores":
+        return _cmd_distribucion_scores()
+    elif cmd == "/near_miss":
+        return _cmd_near_miss()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -1180,6 +1225,12 @@ def procesar_comando(texto: str) -> str:
             "/rapidas_vs_extensas\n"
             "  📊 Separa operaciones que tocaron -1.5/-6/-7.5% en rápidas\n"
             "  (menos de 10hs, positivas) vs. extensas — datos ya existentes.\n\n"
+            "/distribucion_scores\n"
+            "  📊 Distribución del score de TODOS los pares, califiquen o\n"
+            "  no — para investigar por qué hay pocas señales.\n\n"
+            "/near_miss\n"
+            "  📊 Seguimiento simulado de señales con score 9-10 (no\n"
+            "  llegaron a 11) — si hubiera valido la pena bajar el umbral.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

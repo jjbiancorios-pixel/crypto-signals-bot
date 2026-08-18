@@ -56,6 +56,29 @@ def _migrar_columnas_riesgo(cur):
             pass  # ya existe
 
 
+def _crear_tabla_score_completo(cur):
+    """
+    18/08 — Investigación de "por qué tan pocas señales": log liviano del
+    score de TODOS los pares en CADA ciclo (no solo los que califican),
+    con qué dirección hubiera sido candidata y el estado de BTC en ese
+    momento — para ver la distribución real de scores y qué criterio es
+    el que más frecuentemente hace faltar puntos.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS score_completo_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            par TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            hora TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            direccion_candidata TEXT,
+            btc_estado TEXT,
+            razones TEXT,
+            creado TEXT NOT NULL
+        )
+    """)
+
+
 def _crear_tabla_v17_checkpoints(cur):
     """
     v17 — Log de qué pasó (RSI/ADX/estado BTC/distancia al borde del
@@ -392,6 +415,7 @@ def init_db():
 
     _migrar_columnas_riesgo(cur)
     _crear_tabla_v17_checkpoints(cur)
+    _crear_tabla_score_completo(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
     conn.commit()
@@ -2554,3 +2578,95 @@ def actualizar_piso_ganancia(senal_id: int, nuevo_piso: float):
     cur.execute("UPDATE senales SET piso_ganancia_actual = ? WHERE id = ?", (nuevo_piso, senal_id))
     conn.commit()
     conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════
+# 18/08 — Investigación de "por qué tan pocas señales"
+# ══════════════════════════════════════════════════════════════════
+
+def guardar_score_completo(par: str, score: int, direccion_candidata: str, btc_estado: str, razones: list):
+    """Log liviano del score de un par en un ciclo, califique o no."""
+    import json
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        INSERT INTO score_completo_log (par, fecha, hora, score, direccion_candidata, btc_estado, razones, creado)
+        VALUES (?,?,?,?,?,?,?,?)
+    """, (par, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), score, direccion_candidata,
+          btc_estado, json.dumps(razones or [], ensure_ascii=False), ahora.isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def resumen_distribucion_scores(desde_fecha: str = None) -> dict:
+    """
+    18/08 — Distribución de scores de TODOS los pares/ciclos (no solo los
+    que califican) — para ver qué tan lejos (o cerca) quedan en promedio,
+    y si BTC lateral/en movimiento correlaciona con scores más bajos.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT score, btc_estado FROM score_completo_log"
+    params = ()
+    if desde_fecha:
+        query += " WHERE fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    from collections import Counter
+    distribucion = Counter(f["score"] for f in filas)
+    por_btc_estado = {}
+    for f in filas:
+        estado = f["btc_estado"] or "desconocido"
+        por_btc_estado.setdefault(estado, []).append(f["score"])
+
+    return {
+        "total": len(filas),
+        "distribucion": dict(sorted(distribucion.items())),
+        "score_promedio": round(sum(f["score"] for f in filas) / len(filas), 2),
+        "por_btc_estado": {
+            estado: {"n": len(scores), "score_promedio": round(sum(scores) / len(scores), 2)}
+            for estado, scores in por_btc_estado.items()
+        },
+    }
+
+
+def resumen_near_miss(desde_fecha: str = None) -> dict:
+    """
+    18/08 — Resumen de las señales "near-miss" (score 9 o 10, con
+    seguimiento simulado completo vía senales_simuladas) — para ver si
+    hubiera valido la pena bajar el umbral de 11 a 9 o 10.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    query = "SELECT score, resultado_pct, cerrada FROM senales_simuladas WHERE motivo_no_apertura LIKE 'score_bajo_%'"
+    params = ()
+    if desde_fecha:
+        query += " AND fecha >= ?"
+        params = (desde_fecha,)
+    cur.execute(query, params)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    por_score = {}
+    for f in filas:
+        por_score.setdefault(f["score"], []).append(f)
+
+    resumen = {}
+    for score, lst in por_score.items():
+        cerradas = [f for f in lst if f["cerrada"] == 1 and f["resultado_pct"] is not None]
+        ganadoras = [f for f in cerradas if f["resultado_pct"] > 0]
+        resumen[score] = {
+            "n_total": len(lst),
+            "n_cerradas": len(cerradas),
+            "win_rate_pct": round(len(ganadoras) / len(cerradas) * 100, 1) if cerradas else None,
+            "resultado_prom_pct": round(sum(f["resultado_pct"] for f in cerradas) / len(cerradas), 2) if cerradas else None,
+        }
+    return {"total": len(filas), "por_score": resumen}
