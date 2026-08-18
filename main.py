@@ -1001,6 +1001,15 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                     if bu_order_id:
                         db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
                         aperturas_este_ciclo += 1
+                        # v17 — si se liberó una posición para hacerle
+                        # lugar a esta señal, avisar explícitamente.
+                        lib = check.get("liberacion")
+                        if lib and lib.get("liberado"):
+                            enviar_telegram(
+                                f"💰 {lib['par']}: liberada anticipadamente ({lib['resultado_pct']:+.2f}%, "
+                                f"ya había superado el piso de 1.35%) para hacerle lugar a {r['par']} "
+                                f"(score {r['score']})."
+                            )
                 else:
                     apertura_auto = f"⛔ No se abrió automáticamente: {check['motivo']}"
                     # 03/08: como no consiguió lugar real, se guarda aparte
@@ -1299,6 +1308,19 @@ def main():
     h_mensual_utc = (9+3) % 24    # día 1 de cada mes, 09:00 ARG (chequea internamente la fecha)
     schedule.every().day.at(f"{h_mensual_utc:02d}:00").do(_recordatorio_mensual)
 
+    # v17 — chequeo rápido del piso ascendente de ganancia, SOLO para
+    # posiciones que ya superaron 1.35% (no todas) — necesita reaccionar
+    # más rápido que el monitoreo normal de 1 min para no perder margen
+    # entre que el precio retrocede y subimos el piso real de Pionex.
+    def _chequeo_rapido_ganancia_v17():
+        try:
+            acciones = gestion_riesgo.chequeo_rapido_ganancia_v17()
+            for accion in acciones:
+                enviar_telegram(accion)
+        except Exception as e:
+            print(f"Error en chequeo rápido de ganancia v17: {e}")
+    schedule.every(15).seconds.do(_chequeo_rapido_ganancia_v17)
+
     if en_horario_operativo():
         generar_alertas()
 
@@ -1307,7 +1329,13 @@ def main():
             schedule.run_pending()
             telegram_cmds.revisar_updates()
         except Exception as e: print(f"Error loop: {e}")
-        time.sleep(30)
+        # v17 (FIX): antes dormía 30s, lo que impedía que un schedule de
+        # 15s (el chequeo rápido del piso de ganancia) se cumpliera de
+        # verdad — con schedule.run_pending() solo evaluándose cada 30s,
+        # un job de 15s terminaba corriendo a la misma cadencia que todo
+        # lo demás. Ahora duerme 10s — liviano, no debería afectar nada
+        # más (de paso, Telegram también se revisa más seguido).
+        time.sleep(10)
 
 if __name__=="__main__":
     main()

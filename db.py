@@ -46,12 +46,45 @@ def _migrar_columnas_riesgo(cur):
         ("tendencia_pct", "REAL"),  # 29/07: última lectura de ganancia por movimiento direccional (Pionex "PnL tend.")
         ("mejor_resultado_pct", "REAL"),  # 29/07 (modo sombra): mejor % alcanzado durante la vida de la operación — MFE (Maximum Favorable Excursion), complemento del MAE
         ("motivo_cierre", "TEXT"),  # 29/07: 'tp' / 'stop_loss' / lo que devuelva Pionex / 'desconocido' — para separar cierres por TP real de otros tipos
+        ("checkpoint_perdida_evaluado", "REAL"),  # v17: checkpoint de pérdida MÁS NEGATIVO ya evaluado (-6/-9/-12) — evita re-evaluar el mismo checkpoint en cada ciclo
+        ("piso_ganancia_actual", "REAL"),  # v17: nivel de piso de ganancia ACTUALMENTE fijado en el SL real de Pionex (None = todavía no se activó ningún piso)
     ]
     for nombre, tipo in columnas_nuevas:
         try:
             cur.execute(f"ALTER TABLE senales ADD COLUMN {nombre} {tipo}")
         except Exception:
             pass  # ya existe
+
+
+def _crear_tabla_v17_checkpoints(cur):
+    """
+    v17 — Log de qué pasó (RSI/ADX/estado BTC/distancia al borde del
+    rango/volumen) en cada cruce de checkpoint, tanto de pérdida
+    (-6/-9/-12/-15) como de ganancia (1.35/1.5/1.6/1.7/1.85). Objetivo:
+    en 1 semana, poder diferenciar qué distinguía a las operaciones que
+    resolvieron RÁPIDO de las que se extendieron — en el momento del
+    cruce, no en retrospectiva.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS v17_checkpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            senal_id INTEGER NOT NULL,
+            par TEXT NOT NULL,
+            tipo TEXT NOT NULL,
+            checkpoint_pct REAL NOT NULL,
+            resultado_en_cruce REAL,
+            decision TEXT,
+            rsi REAL,
+            adx REAL,
+            adx_bajando INTEGER,
+            btc_estado TEXT,
+            toco_banda_contraria INTEGER,
+            distancia_borde_rango_pct REAL,
+            volumen_ratio REAL,
+            factores_cumplidos INTEGER,
+            timestamp TEXT NOT NULL
+        )
+    """)
 
 
 def _corregir_registrado_pionex_automaticas(cur):
@@ -358,6 +391,7 @@ def init_db():
     """)
 
     _migrar_columnas_riesgo(cur)
+    _crear_tabla_v17_checkpoints(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
     conn.commit()
@@ -2477,3 +2511,46 @@ def resumen_rapidas_vs_extensas(umbrales: list = None) -> dict:
         }
     conn.close()
     return resultado
+
+
+# ══════════════════════════════════════════════════════════════════
+# v17 — checkpoints de pérdida/ganancia, guardado y consulta
+# ══════════════════════════════════════════════════════════════════
+
+def guardar_checkpoint_v17(senal_id: int, par: str, tipo: str, checkpoint_pct: float,
+                            resultado_en_cruce: float, decision: str = None, rsi: float = None,
+                            adx: float = None, adx_bajando: bool = None, btc_estado: str = None,
+                            toco_banda_contraria: bool = None, distancia_borde_rango_pct: float = None,
+                            volumen_ratio: float = None, factores_cumplidos: int = None):
+    """v17 — guarda el detalle de un cruce de checkpoint (pérdida o ganancia)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO v17_checkpoints
+            (senal_id, par, tipo, checkpoint_pct, resultado_en_cruce, decision, rsi, adx,
+             adx_bajando, btc_estado, toco_banda_contraria, distancia_borde_rango_pct,
+             volumen_ratio, factores_cumplidos, timestamp)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (senal_id, par, tipo, checkpoint_pct, resultado_en_cruce, decision, rsi, adx,
+          int(adx_bajando) if adx_bajando is not None else None, btc_estado,
+          int(toco_banda_contraria) if toco_banda_contraria is not None else None,
+          distancia_borde_rango_pct, volumen_ratio, factores_cumplidos,
+          datetime.now(TZ_ARG).isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def marcar_checkpoint_perdida_evaluado(senal_id: int, checkpoint_pct: float):
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET checkpoint_perdida_evaluado = ? WHERE id = ?", (checkpoint_pct, senal_id))
+    conn.commit()
+    conn.close()
+
+
+def actualizar_piso_ganancia(senal_id: int, nuevo_piso: float):
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE senales SET piso_ganancia_actual = ? WHERE id = ?", (nuevo_piso, senal_id))
+    conn.commit()
+    conn.close()

@@ -25,7 +25,16 @@ PIONEX_BASE_URL = "https://api.pionex.com"
 PIONEX_API_KEY = os.environ.get("PIONEX_API_KEY", "")
 PIONEX_API_SECRET = os.environ.get("PIONEX_API_SECRET", "")
 
-TAKE_PROFIT_PCT = 0.0135  # 1.35% fijo, según estrategia confirmada
+TAKE_PROFIT_PCT = 0.0135  # 1.35% — referencia INTERNA nuestra (primer checkpoint del piso ascendente de v17), YA NO se manda directo a Pionex
+# v17 — El TP real que le mandamos a Pionex ahora es un techo alto (nunca
+# debería alcanzarse) — el cierre real por ganancia lo maneja el piso
+# ascendente vía lossStop (ver modificar_stop_loss), con el motor rápido
+# de Pionex protegiendo cada nivel confirmado. El SL real arranca en
+# -15% (el techo absoluto incondicional de v17) desde la apertura misma
+# — antes no había ningún SL real hasta que nuestro bot lo cerraba a
+# mano; ahora Pionex mismo protege ese piso desde el minuto uno.
+PROFIT_STOP_CEILING_PIONEX = 0.50  # 50% — techo alto, nunca debería alcanzarse de verdad
+STOP_LOSS_INICIAL_PIONEX = -0.15  # -15%, el techo absoluto incondicional de v17
 
 
 def _firmar(method: str, path: str, query: str, body: str = "") -> tuple:
@@ -92,7 +101,9 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
         "quoteInvestment": str(capital_usdt),
         "investmentFrom": "USER",
         "profitStopType": "profit_ratio",
-        "profitStop": str(TAKE_PROFIT_PCT),
+        "profitStop": str(PROFIT_STOP_CEILING_PIONEX),
+        "lossStopType": "profit_ratio",
+        "lossStop": str(STOP_LOSS_INICIAL_PIONEX),
     }
     if extra_margin_usdt and extra_margin_usdt > 0:
         # Margen de origen (dinámico): reservado desde la apertura, baja el
@@ -671,6 +682,42 @@ def reforzar_margen(bu_order_id: str, monto_extra_usdt: float, precio_actual: fl
         "quoteInvestment": monto_extra_usdt,
         "extraMargin": True,
         "openPrice": precio_actual,
+    }
+    body_json = json.dumps(body_dict, separators=(",", ":"))
+    timestamp, firma = _firmar("POST", path, "", body_json)
+
+    headers = {
+        "PIONEX-KEY": PIONEX_API_KEY,
+        "PIONEX-SIGNATURE": firma,
+        "Content-Type": "application/json",
+    }
+    url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
+    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+    return resp.json()
+
+
+def modificar_stop_loss(bu_order_id: str, nuevo_lossstop_pct: float) -> dict:
+    """
+    v17 — Sube (o baja) el SL REAL de una grilla YA ABIERTA en Pionex, en
+    modo PnL% (confirmado con captura real de la app: acepta un piso en
+    zona de GANANCIA, no solo pérdida tradicional). Es el mecanismo
+    central del piso ascendente de ganancia — Pionex protege en tiempo
+    real lo que ya confirmamos, con su motor rápido, no el nuestro.
+
+    nuevo_lossstop_pct: negativo para pérdida (ej. -15.0), positivo para
+    un piso en zona de ganancia (ej. 1.35).
+
+    ⚠️ Confirmado por la app que existe un modo "PnL%" (captura real,
+    15/08) — pero el nombre EXACTO del valor interno de lossStopType para
+    ese modo no está confirmado contra la API (asumido "profit_ratio",
+    mismo patrón que profitStopType). Si falla, revisar esto primero.
+    """
+    path = "/api/v1/bot/orders/futuresGrid/adjustParams"
+    body_dict = {
+        "buOrderId": bu_order_id,
+        "type": "adjust_params",
+        "lossStopType": "profit_ratio",
+        "lossStop": str(round(nuevo_lossstop_pct / 100, 6)),
     }
     body_json = json.dumps(body_dict, separators=(",", ":"))
     timestamp, firma = _firmar("POST", path, "", body_json)

@@ -35,12 +35,18 @@ MAX_POSICIONES_SIMULTANEAS = 2  # v16: tope duro nuevo — antes no existía (~1
 # (6 de ~14 posiciones ≈ 43% -> redondea a 1 de 2).
 MAX_ATASCADAS_RIESGO = 1
 MAX_APERTURAS_POR_CICLO = 2  # 12/08: subido de 1 a 2 (Juanjo) — igual al tope de posiciones simultáneas, para no perder una 2da señal buena cuando hay capital libre y aparecen 2 el mismo ciclo
-STOP_LOSS_PCT = -20  # 28/07: NUEVO — cierre real si una operación llega a este % de pérdida sobre su capital
-# asignado, sin importar cuántos días lleve. Calibrado con expectancy real sobre 542 operaciones
-# históricas limpias (98% win rate, +1.66% promedio ganador): -20% da expectancy de +1.25%/operación,
-# vs. dejar correr sin límite (que en 8 casos reales promedió -103%, incluido EGLD -215.68%, SEI -130%,
-# RUNE -75%, MASK -31%). Reemplaza parcialmente "nunca cerrar en pérdida nominal" SOLO para pérdidas que
-# superan este piso. Recalibrar cuando haya datos de MAE real (v16 todavía no los captura).
+STOP_LOSS_PCT = -15  # v17: techo absoluto INCONDICIONAL — antes -20%, reemplazado por el esquema de checkpoints. Este chequeo queda como RED DE SEGURIDAD (el cierre real de -15% lo protege el SL nativo de Pionex, mucho más rápido que nuestro monitoreo de 1 min — esto es un backup por si esa protección fallara).
+# v17 — Checkpoints de pérdida CON análisis técnico (no solo magnitud):
+# en -6/-9/-12%, se evalúan 4 factores; si se cumplen 3 de 4, se mantiene
+# hasta el próximo checkpoint; si 2 o menos, se cierra ahí mismo. -15% es
+# el techo absoluto, sin excepción, sin importar el análisis.
+CHECKPOINTS_PERDIDA = [-6.0, -9.0, -12.0]
+# v17 — Piso ascendente de ganancia (ratchet): una vez que el resultado
+# toca cada nivel, se sube el SL REAL de Pionex (lossStop) al piso
+# correspondiente — Pionex protege ese nivel con su motor rápido, no el
+# nuestro. Más allá de 1.85%, pasa a un retroceso proporcional del pico.
+RATCHET_GANANCIA = {1.35: 1.20, 1.5: 1.35, 1.6: 1.45, 1.7: 1.55, 1.85: 1.70}
+RETROCESO_GANANCIA_PCT_V17 = 0.20
 UMBRAL_GRID_DINAMICO_PCT = 10  # v16 (modo sombra): distancia al borde del rango que "hubiera" disparado un ajuste
 BETA_REBOTE_DGT_PCT = 0.3  # v16 (modo sombra, 28/07): % de rebote/pullback confirmado que exige el paper DGT antes de ajustar — valor propio, sin dato histórico detrás todavía, a calibrar con el informe semanal
 OBJETIVO_DIARIO_PCT = 3
@@ -62,6 +68,37 @@ RESULTADO_MINIMO_CIERRE_10HS = 0.2  # % — YA NO se usa para cerrar (28/07: PAS
 # el 9% de capital por operación (ya fijo, no se toca) se divide acá
 # ~50/50, en vez de comprometer 13.5% como en la versión anterior.
 RATIO_MARGEN_ORIGEN = 0.10  # 01/08: 30% -> 10% (Juanjo: con stop-loss -20% activo, colchón de 30% quedó excesivo — 10% sigue cubriendo el escenario residual de falla técnica, ~9% de movimiento real de precio en 10x)
+
+
+def intentar_liberar_slot_para_senal_nueva() -> dict:
+    """
+    v17 — Si el tope de posiciones está lleno pero apareció una señal
+    nueva de alta probabilidad, busca entre las posiciones ABIERTAS si
+    alguna ya alcanzó el primer piso de ganancia (>=1.35%, elegible para
+    liberarse sin perder plata) y la cierra para hacerle lugar a la
+    nueva. Si hay varias elegibles, libera la que tiene MENOR ganancia
+    actual (la que menos potencial futuro sacrifica). Devuelve
+    {"liberado": bool, "par": str|None, "resultado_pct": float|None}.
+    """
+    abiertas = db.operaciones_abiertas_con_bu_order()
+    elegibles = [op for op in abiertas if (op.get("mejor_resultado_pct") or 0) >= 1.35]
+    if not elegibles:
+        return {"liberado": False, "par": None, "resultado_pct": None}
+
+    elegibles.sort(key=lambda op: op.get("mejor_resultado_pct") or 0)
+    candidata = elegibles[0]
+    bu_order_id = candidata.get("bu_order_id")
+    par = candidata.get("par")
+    try:
+        desglose = pionex_api.calcular_resultado_desglosado(
+            bu_order_id, par=par, capital_total_real=candidata.get("capital_asignado")
+        )
+        resultado_actual = desglose["total_pct"] if desglose else candidata.get("mejor_resultado_pct")
+        pionex_api.cerrar_grilla_futuros(bu_order_id, nota="v17: liberado para nueva señal de alta probabilidad")
+        db.cerrar_senal_automatica(candidata["id"], resultado_actual, motivo="liberado_para_nueva_senal")
+        return {"liberado": True, "par": par, "resultado_pct": resultado_actual}
+    except Exception:
+        return {"liberado": False, "par": None, "resultado_pct": None}
 
 
 def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
@@ -134,13 +171,22 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
     inversion_real = round(capital_operacion - margen_origen, 2)
 
     posiciones_abiertas = len(db.operaciones_abiertas_con_bu_order())
+    liberacion = None
     if posiciones_abiertas >= MAX_POSICIONES_SIMULTANEAS:
-        return {
-            "permitido": False,
-            "motivo": f"Tope de posiciones simultáneas alcanzado "
-                      f"({posiciones_abiertas}/{MAX_POSICIONES_SIMULTANEAS}).",
-            "capital_operacion": capital_operacion,
-        }
+        # v17 — antes de rechazar directo, intentar liberar una posición
+        # que ya esté por encima del primer piso de ganancia (1.35%),
+        # para no perderse una señal nueva de alta probabilidad solo
+        # porque el capital está ocupado en algo que ya "cobró lo suyo".
+        liberacion = intentar_liberar_slot_para_senal_nueva()
+        if liberacion["liberado"]:
+            posiciones_abiertas -= 1
+        else:
+            return {
+                "permitido": False,
+                "motivo": f"Tope de posiciones simultáneas alcanzado "
+                          f"({posiciones_abiertas}/{MAX_POSICIONES_SIMULTANEAS}).",
+                "capital_operacion": capital_operacion,
+            }
 
     if not es_reapertura and aperturas_este_ciclo >= MAX_APERTURAS_POR_CICLO:
         return {
@@ -198,7 +244,177 @@ def verificar_seguridad_apertura(capital_total: float = CAPITAL_TOTAL_USD,
         "modo_restrictivo": modo_restrictivo,
         "atascadas": atascadas,
         "usando_reserva": round(usando_reserva, 2),
+        "liberacion": liberacion,
     }
+
+
+def _evaluar_factores_tecnicos_perdida(par: str, es_largo: bool) -> dict:
+    """
+    v17 — Evalúa los 4 factores técnicos en un checkpoint de pérdida:
+    1. RSI en sobreventa (LARGO) o sobrecompra (CORTO) — a favor de reversión
+    2. ADX bajando — la tendencia en contra pierde fuerza (comparación
+       ventana reciente vs. anterior, sin necesitar guardar estado extra)
+    3. Precio tocó/cerca de la banda de Bollinger contraria
+    4. BTC no refuerza el movimiento en contra
+    Import de main.py DIFERIDO (dentro de la función) para evitar import
+    circular — gestion_riesgo no puede importar main a nivel de módulo
+    porque main ya importa gestion_riesgo.
+    """
+    import main
+    try:
+        df15 = main.get_velas(par, "15m", n=40)
+        if df15 is None or len(df15) < 30:
+            return {"factores_cumplidos": 0, "error": "sin velas suficientes"}
+
+        rsi = main.calc_rsi(df15["close"])
+        bb = main.calc_bb(df15["close"])
+        adx_reciente = main.calc_adx(df15.tail(20))["adx"]
+        adx_anterior = main.calc_adx(df15.iloc[-28:-8])["adx"]
+        adx_bajando = adx_reciente < adx_anterior
+        btc = main.analizar_btc()
+
+        if es_largo:
+            f1 = rsi <= 32          # sobreventa
+            f3 = bb["pos"] <= 0.10  # tocó/cerca de la banda inferior
+            f4 = btc["estado"] != "BAJISTA"  # BTC no refuerza la caída
+        else:
+            f1 = rsi >= 68          # sobrecompra
+            f3 = bb["pos"] >= 0.90  # tocó/cerca de la banda superior
+            f4 = btc["estado"] != "ALCISTA"  # BTC no refuerza la subida
+        f2 = adx_bajando
+
+        return {
+            "factores_cumplidos": sum([f1, f2, f3, f4]), "rsi": rsi, "adx": adx_reciente,
+            "adx_bajando": adx_bajando, "btc_estado": btc["estado"], "toco_banda_contraria": f3,
+        }
+    except Exception as e:
+        return {"factores_cumplidos": 0, "error": str(e)}
+
+
+def _procesar_checkpoint_perdida(op: dict, resultado_actual: float, bu_order_id: str):
+    """
+    v17 — Si resultado_actual cruzó un checkpoint de pérdida (-6/-9/-12)
+    todavía no evaluado, decide cerrar o mantener según los 4 factores
+    técnicos (3 de 4 = mantener, 2 o menos = cerrar). El techo de -15% es
+    aparte (ver el chequeo de STOP_LOSS_PCT, incondicional, sin análisis).
+    """
+    ya_evaluado = op.get("checkpoint_perdida_evaluado")
+    par = op["par"]
+    senal_id = op["id"]
+
+    for checkpoint in CHECKPOINTS_PERDIDA:
+        if resultado_actual > checkpoint:
+            continue
+        if ya_evaluado is not None and ya_evaluado <= checkpoint:
+            continue  # este checkpoint (o uno más profundo) ya se evaluó antes
+
+        direccion = op.get("direccion", "")
+        es_largo = "LARGO" in direccion
+        analisis = _evaluar_factores_tecnicos_perdida(par, es_largo)
+        factores = analisis.get("factores_cumplidos", 0)
+        decision = "mantener" if factores >= 3 else "cerrar"
+
+        db.guardar_checkpoint_v17(
+            senal_id, par, "perdida", checkpoint, resultado_actual, decision=decision,
+            rsi=analisis.get("rsi"), adx=analisis.get("adx"), adx_bajando=analisis.get("adx_bajando"),
+            btc_estado=analisis.get("btc_estado"), toco_banda_contraria=analisis.get("toco_banda_contraria"),
+            factores_cumplidos=factores,
+        )
+        db.marcar_checkpoint_perdida_evaluado(senal_id, checkpoint)
+
+        if decision == "cerrar":
+            try:
+                pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"v17: checkpoint {checkpoint}%, {factores}/4 factores")
+                db.cerrar_senal_automatica(senal_id, resultado_actual, motivo=f"checkpoint_{checkpoint}")
+                return (f"🛑 {par}: cerrada en checkpoint {checkpoint}% ({resultado_actual:+.2f}% real) — "
+                        f"solo {factores}/4 factores técnicos a favor de mantener.")
+            except Exception as e:
+                return f"⚠️ {par}: quiso cerrar en checkpoint {checkpoint}% pero falló ({e}) — REVISAR."
+        else:
+            return (f"📊 {par}: tocó checkpoint {checkpoint}% ({resultado_actual:+.2f}% real) — "
+                    f"{factores}/4 factores a favor, MANTIENE hasta el próximo checkpoint.")
+    return None
+
+
+def _procesar_piso_ganancia(op: dict, resultado_actual: float, pico_actual: float, bu_order_id: str):
+    """
+    v17 — Si pico_actual alcanzó un nuevo nivel del ratchet de ganancia,
+    sube el SL real de Pionex (lossStop) al piso correspondiente — el
+    motor rápido de Pionex protege ese nivel, no nuestro monitoreo. Más
+    allá de 1.85%, usa retroceso proporcional del 20% del pico en vez de
+    niveles fijos.
+    """
+    piso_actual_fijado = op.get("piso_ganancia_actual")
+    senal_id = op["id"]
+    par = op["par"]
+
+    if pico_actual >= 1.85:
+        nuevo_piso = round(pico_actual * (1 - RETROCESO_GANANCIA_PCT_V17), 4)
+        if piso_actual_fijado is not None and nuevo_piso <= piso_actual_fijado:
+            return None
+        try:
+            pionex_api.modificar_stop_loss(bu_order_id, nuevo_piso)
+            db.actualizar_piso_ganancia(senal_id, nuevo_piso)
+            db.guardar_checkpoint_v17(senal_id, par, "ganancia", pico_actual, resultado_actual,
+                                       decision=f"piso subido a {nuevo_piso} (retroceso 20%)")
+            return f"📈 {par}: pico {pico_actual:+.2f}% — piso de Pionex subido a {nuevo_piso:+.2f}% (retroceso 20%)."
+        except Exception as e:
+            return f"⚠️ {par}: quiso subir el piso a {nuevo_piso:+.2f}% pero falló ({e})."
+
+    mejor_piso_aplicable = None
+    mejor_nivel_aplicable = None
+    for nivel, piso_correspondiente in sorted(RATCHET_GANANCIA.items()):
+        if pico_actual >= nivel:
+            mejor_piso_aplicable = piso_correspondiente
+            mejor_nivel_aplicable = nivel
+
+    if mejor_piso_aplicable is None:
+        return None
+    if piso_actual_fijado is not None and piso_actual_fijado >= mejor_piso_aplicable:
+        return None
+
+    try:
+        pionex_api.modificar_stop_loss(bu_order_id, mejor_piso_aplicable)
+        db.actualizar_piso_ganancia(senal_id, mejor_piso_aplicable)
+        db.guardar_checkpoint_v17(senal_id, par, "ganancia", mejor_nivel_aplicable, resultado_actual,
+                                   decision=f"piso subido a {mejor_piso_aplicable}")
+        return f"📈 {par}: tocó {mejor_nivel_aplicable}% — piso de Pionex subido a {mejor_piso_aplicable:+.2f}%."
+    except Exception as e:
+        return f"⚠️ {par}: quiso subir el piso a {mejor_piso_aplicable:+.2f}% pero falló ({e})."
+
+
+def chequeo_rapido_ganancia_v17() -> list:
+    """
+    v17 — Chequeo MÁS FRECUENTE (cada 15seg vía main.py, no cada 1 min)
+    SOLO para posiciones que ya cruzaron el primer nivel de ganancia
+    (1.35%+) — no le pega a todas las posiciones, solo a las que
+    necesitan que el piso ascendente reaccione rápido a un retroceso.
+    """
+    acciones = []
+    abiertas = db.operaciones_abiertas_con_bu_order()
+    for op in abiertas:
+        mejor = op.get("mejor_resultado_pct")
+        if mejor is None or mejor < 1.35:
+            continue
+
+        bu_order_id = op.get("bu_order_id")
+        par = op["par"]
+        try:
+            desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, par=par, capital_total_real=op.get("capital_asignado"))
+            resultado_actual = desglose["total_pct"] if desglose else None
+        except Exception:
+            resultado_actual = None
+        if resultado_actual is None:
+            continue
+
+        pico_actual = max(resultado_actual, mejor)
+        if pico_actual > mejor:
+            db.actualizar_mejor_resultado(op["id"], pico_actual)
+
+        mensaje = _procesar_piso_ganancia(op, resultado_actual, pico_actual, bu_order_id)
+        if mensaje:
+            acciones.append(mensaje)
+    return acciones
 
 
 def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
@@ -354,19 +570,34 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
             # en la mesa, o si el precio se acerca y revierte sin llegar.
             db.actualizar_mejor_resultado(senal_id, resultado_actual_sl)
 
+        # v17 — Red de seguridad en -15% (techo absoluto incondicional).
+        # El cierre real de este nivel lo protege el SL nativo de Pionex
+        # (lossStop, fijado en -15% desde la apertura misma) — esto es un
+        # BACKUP por si esa protección fallara por algún motivo (API,
+        # slippage extremo, etc.), no el mecanismo principal.
         if resultado_actual_sl is not None and resultado_actual_sl <= STOP_LOSS_PCT:
             try:
-                pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"Stop-loss automático {STOP_LOSS_PCT}%")
-                db.cerrar_senal_automatica(senal_id, resultado_actual_sl, motivo="stop_loss")
+                pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"Red de seguridad v17: {STOP_LOSS_PCT}%")
+                db.cerrar_senal_automatica(senal_id, resultado_actual_sl, motivo="techo_absoluto_v17")
                 acciones.append(
-                    f"🛑 {par}: STOP-LOSS ejecutado a {resultado_actual_sl:+.2f}% "
-                    f"(umbral {STOP_LOSS_PCT}%), capital liberado."
+                    f"🛑 {par}: TECHO ABSOLUTO ejecutado a {resultado_actual_sl:+.2f}% "
+                    f"(umbral {STOP_LOSS_PCT}%) — el SL nativo de Pionex debería haber actuado antes, REVISAR por qué no lo hizo."
                 )
                 continue
             except Exception as e:
                 acciones.append(
-                    f"⚠️ {par}: tocó el stop-loss ({resultado_actual_sl:+.2f}%) pero falló el cierre real ({e}) — REVISAR YA."
+                    f"⚠️ {par}: tocó el techo absoluto ({resultado_actual_sl:+.2f}%) pero falló el cierre real ({e}) — REVISAR YA."
                 )
+
+        # v17 — Checkpoints de pérdida con análisis técnico (-6/-9/-12%):
+        # antes de llegar al techo de -15%, se evalúa si mantener o cerrar
+        # según 4 factores técnicos, no solo la magnitud de la pérdida.
+        if resultado_actual_sl is not None:
+            mensaje_checkpoint = _procesar_checkpoint_perdida(op, resultado_actual_sl, bu_order_id)
+            if mensaje_checkpoint:
+                acciones.append(mensaje_checkpoint)
+                if "cerrada en checkpoint" in mensaje_checkpoint:
+                    continue
 
         # PASO 2 (28/07: CAMBIADO a solo informativo, ya NO cierra nada —
         # decisión confirmada: el único cierre real sigue siendo el TP de
