@@ -1116,12 +1116,31 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                                 f"ya había superado el piso de 1.35%) para hacerle lugar a {r['par']} "
                                 f"(score {r['score']})."
                             )
+                    else:
+                        # 19/08 (FIX CRÍTICO) — antes, si la apertura real
+                        # fallaba (verificación de seguridad de precio,
+                        # BOT_INTERNAL_ERROR agotando los 3 reintentos,
+                        # cualquier excepción), la señal quedaba guardada
+                        # con cerrado=0 PARA SIEMPRE — bloqueando ese par
+                        # de por vida (db.ultima_senal_par nunca más
+                        # devolvía None). Caso real: XMRUSDT y PORTALUSDT
+                        # quedaron "fantasma" así. Ahora se cierra la
+                        # señal con motivo claro, liberando el par.
+                        db.cerrar_senal_automatica(senal_id, 0, motivo="apertura_fallida")
+                        enviar_telegram(f"⚠️ {r['par']}: la apertura automática falló y la señal quedó descartada — {apertura_auto}")
                 else:
                     apertura_auto = f"⛔ No se abrió automáticamente: {check['motivo']}"
                     # 03/08: como no consiguió lugar real, se guarda aparte
                     # para simular su comportamiento (MAE/MFE, TP/stop-loss)
                     # sin arriesgar capital — más datos de patrones, más rápido.
                     db.guardar_senal_simulada(r, motivo_no_apertura=check["motivo"])
+                    # 19/08 (FIX CRÍTICO) — mismo problema que el caso de
+                    # apertura fallida: la señal simulada es un registro
+                    # APARTE (tabla senales_simuladas) — el senal_id
+                    # ORIGINAL de la tabla principal (senales) seguía
+                    # quedando con cerrado=0 para siempre, bloqueando el
+                    # par igual. Se cierra acá también.
+                    db.cerrar_senal_automatica(senal_id, 0, motivo="bloqueada_sin_capital")
 
             # Margen de entrada
             if r["direccion"]=="📈 LARGO":
