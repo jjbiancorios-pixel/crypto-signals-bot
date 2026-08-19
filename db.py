@@ -56,6 +56,25 @@ def _migrar_columnas_riesgo(cur):
             pass  # ya existe
 
 
+def _crear_tabla_frescura_velas(cur):
+    """
+    18/08 — Mide cuántos minutos tiene la última vela de 15m al momento
+    de cada ciclo de análisis, por cada fuente de la cascada (Bybit/OKX/
+    Binance) — para decidir con datos propios si se puede achicar el
+    margen actual de 3 minutos (:03/:18/:33/:48) a 1-2 min.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS frescura_velas_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fuente TEXT NOT NULL,
+            minutos_desde_ultima_vela REAL NOT NULL,
+            fecha TEXT NOT NULL,
+            hora TEXT NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+
+
 def _crear_tabla_experimento_btc_lateral(cur):
     """
     18/08 — Experimento "Opción 2": cuando BTC está lateral Y la moneda
@@ -458,6 +477,7 @@ def init_db():
     _crear_tabla_v17_checkpoints(cur)
     _crear_tabla_score_completo(cur)
     _crear_tabla_experimento_btc_lateral(cur)
+    _crear_tabla_frescura_velas(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
     conn.commit()
@@ -2874,3 +2894,45 @@ def resumen_experimento_btc_lateral() -> dict:
         "win_rate_pct": round(len(ganadoras) / len(cerradas) * 100, 1) if cerradas else None,
         "resultado_prom_pct": round(sum(r["resultado_pct"] for r in cerradas) / len(cerradas), 2) if cerradas else None,
     }
+
+
+def guardar_frescura_velas(fuente: str, minutos_desde_ultima_vela: float):
+    """18/08 — guarda una medición de frescura de vela para una fuente de la cascada."""
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        INSERT INTO frescura_velas_log (fuente, minutos_desde_ultima_vela, fecha, hora, creado)
+        VALUES (?,?,?,?,?)
+    """, (fuente, minutos_desde_ultima_vela, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), ahora.isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def resumen_frescura_velas() -> dict:
+    """
+    18/08 — Resumen por fuente: promedio/máximo de minutos que tenía la
+    última vela al momento de cada ciclo — para decidir el viernes si
+    1-2 min de margen alcanzarían sin riesgo, en vez de los 3 actuales.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT fuente, minutos_desde_ultima_vela FROM frescura_velas_log")
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    por_fuente = {}
+    for f in filas:
+        por_fuente.setdefault(f["fuente"], []).append(f["minutos_desde_ultima_vela"])
+
+    resumen = {}
+    for fuente, valores in por_fuente.items():
+        resumen[fuente] = {
+            "n": len(valores),
+            "promedio_min": round(sum(valores) / len(valores), 2),
+            "maximo_min": round(max(valores), 2),
+            "minimo_min": round(min(valores), 2),
+        }
+    return {"total": len(filas), "por_fuente": resumen}

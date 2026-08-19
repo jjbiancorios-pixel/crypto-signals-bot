@@ -953,6 +953,23 @@ def _cmd_experimento_btc_lateral() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_frescura_velas() -> str:
+    """
+    18/08 — Resumen de qué tan fresca está la última vela de 15m al
+    momento de cada ciclo, por fuente — para decidir el viernes si se
+    puede achicar el margen actual de 3 min a 1-2 sin riesgo.
+    """
+    r = db.resumen_frescura_velas()
+    if r.get("total", 0) == 0:
+        return "📊 Frescura de velas: sin datos todavía."
+
+    lineas = [f"📊 <b>Frescura de la vela de 15m por fuente</b> ({r['total']} mediciones, margen actual: 3 min)\n"]
+    for fuente, d in r["por_fuente"].items():
+        lineas.append(f"<b>{fuente}</b>: prom {d['promedio_min']}min | máx {d['maximo_min']}min | mín {d['minimo_min']}min (n={d['n']})")
+    lineas.append("\n💡 Si el máximo de todas las fuentes está bien por debajo de 3min, sugiere que se puede achicar el margen con seguridad.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -1226,6 +1243,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_comparar_bloqueadas()
     elif cmd == "/experimento_btc_lateral":
         return _cmd_experimento_btc_lateral()
+    elif cmd == "/frescura_velas":
+        return _cmd_frescura_velas()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -1325,6 +1344,9 @@ def procesar_comando(texto: str) -> str:
             "/experimento_btc_lateral\n"
             "  📊 Resultado del experimento BTC lateral + divergencia\n"
             "  propia (Opción 2) — para el chequeo del viernes.\n\n"
+            "/frescura_velas\n"
+            "  📊 Qué tan fresca está la vela de 15m por fuente al momento\n"
+            "  del análisis — para decidir si achicar el margen de 3 min.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

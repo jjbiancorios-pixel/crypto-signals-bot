@@ -917,6 +917,26 @@ def intentar_reapertura(candidato: dict):
         print(f"  ⚠️ Reapertura {par}: {mensaje}")
 
 
+def _loguear_frescura_velas():
+    """
+    18/08 — Mide qué tan "fresca" está la última vela de 15m al momento
+    del ciclo de análisis (hoy con 3 min de margen: :03/:18/:33/:48) —
+    para decidir el viernes, con datos propios, si se puede achicar el
+    margen a 1-2 min sin riesgo de trabajar con datos todavía no
+    asentados en alguna de las 3 fuentes de la cascada.
+    """
+    for nombre_fuente, funcion in (("bybit", _velas_bybit), ("okx", _velas_okx), ("binance", _velas_binance)):
+        try:
+            df = funcion("BTCUSDT", "15m", 5)
+            ts_ultima = float(df["ts"].iloc[-1])
+            ts_dt = datetime.fromtimestamp(ts_ultima / 1000 if ts_ultima > 1e12 else ts_ultima, tz=timezone.utc)
+            ahora = datetime.now(timezone.utc)
+            minutos_desde_ts = round((ahora - ts_dt).total_seconds() / 60, 2)
+            db.guardar_frescura_velas(nombre_fuente, minutos_desde_ts)
+        except Exception as e:
+            print(f"⚠️ frescura velas {nombre_fuente}: {e}")
+
+
 def generar_alertas(forzar_corto=False, forzar_largo=False):
     try:
         if db.esta_pausado_global():
@@ -926,6 +946,8 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
         if not en_horario_operativo():
             print(f"[{hora_arg()}] Fuera de horario operativo")
             return
+
+        _loguear_frescura_velas()  # 18/08 — mide antes de arrancar el análisis en sí
 
         ahora=hora_arg()
         print(f"\n[{ahora}] Analizando {len(PARES)} pares...")
