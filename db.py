@@ -56,6 +56,33 @@ def _migrar_columnas_riesgo(cur):
             pass  # ya existe
 
 
+def _crear_tabla_experimento_btc_lateral(cur):
+    """
+    18/08 — Experimento "Opción 2": cuando BTC está lateral Y la moneda
+    diverge fuerte por su cuenta, ahora suma 2 puntos en vez de 1 (antes
+    ignoraba la divergencia propia en este caso). Guarda score REAL (con
+    el bono) y score_sin_bono (el que hubiera dado el sistema viejo) en
+    CADA caso donde se aplicó el bono — para comparar el viernes: cuántas
+    veces el bono hizo la diferencia entre calificar o no, y cómo les fue.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS experimento_btc_lateral_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            par TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            hora TEXT NOT NULL,
+            score_real INTEGER NOT NULL,
+            score_sin_bono INTEGER NOT NULL,
+            califico_real INTEGER NOT NULL,
+            hubiera_calificado_sin_bono INTEGER NOT NULL,
+            hizo_diferencia INTEGER NOT NULL,
+            direccion_candidata TEXT,
+            senal_id INTEGER,
+            creado TEXT NOT NULL
+        )
+    """)
+
+
 def _crear_tabla_score_completo(cur):
     """
     18/08 — Investigación de "por qué tan pocas señales": log liviano del
@@ -430,6 +457,7 @@ def init_db():
     _migrar_columnas_riesgo(cur)
     _crear_tabla_v17_checkpoints(cur)
     _crear_tabla_score_completo(cur)
+    _crear_tabla_experimento_btc_lateral(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
     conn.commit()
@@ -2783,3 +2811,66 @@ def marcar_checkpoint_intermedio_paxg(sim_id: int):
     cur.execute("UPDATE paxg_simulaciones SET checkpoint_intermedio_evaluado = 1 WHERE id = ?", (sim_id,))
     conn.commit()
     conn.close()
+
+
+def guardar_experimento_btc_lateral(par: str, score_real: int, score_sin_bono: int,
+                                     direccion_candidata: str = None, senal_id: int = None):
+    """
+    18/08 — Guarda UN caso donde se aplicó el bono de BTC lateral +
+    divergencia propia (score_real > score_sin_bono). hizo_diferencia=1
+    si el bono fue lo que empujó a la señal a calificar (score_real>=11
+    pero score_sin_bono<11) — son los casos más importantes para el
+    viernes, porque SOLO existen gracias al cambio de hoy.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    califico_real = 1 if score_real >= 11 else 0
+    hubiera_calificado_sin_bono = 1 if score_sin_bono >= 11 else 0
+    hizo_diferencia = 1 if (califico_real and not hubiera_calificado_sin_bono) else 0
+    cur.execute("""
+        INSERT INTO experimento_btc_lateral_log
+            (par, fecha, hora, score_real, score_sin_bono, califico_real,
+             hubiera_calificado_sin_bono, hizo_diferencia, direccion_candidata, senal_id, creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, (par, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), score_real, score_sin_bono,
+          califico_real, hubiera_calificado_sin_bono, hizo_diferencia, direccion_candidata, senal_id, ahora.isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def resumen_experimento_btc_lateral() -> dict:
+    """
+    18/08 — Resumen del experimento para el viernes: cuántas veces se
+    aplicó el bono, cuántas veces hizo la diferencia real (calificó SOLO
+    por el bono), y cómo les fue a esas — cruzando contra 'senales' por
+    senal_id cuando abrieron de verdad.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM experimento_btc_lateral_log")
+    filas = [dict(f) for f in cur.fetchall()]
+    if not filas:
+        conn.close()
+        return {"total": 0}
+
+    hicieron_diferencia = [f for f in filas if f["hizo_diferencia"] == 1]
+    resultados = []
+    for f in hicieron_diferencia:
+        if f["senal_id"]:
+            cur.execute("SELECT resultado_pct, cerrado FROM senales WHERE id = ?", (f["senal_id"],))
+            row = cur.fetchone()
+            if row:
+                resultados.append(dict(row))
+    conn.close()
+
+    cerradas = [r for r in resultados if r["cerrado"] == 1 and r["resultado_pct"] is not None]
+    ganadoras = [r for r in cerradas if r["resultado_pct"] > 0]
+
+    return {
+        "total": len(filas),
+        "veces_hizo_diferencia": len(hicieron_diferencia),
+        "n_cerradas_de_las_que_hicieron_diferencia": len(cerradas),
+        "win_rate_pct": round(len(ganadoras) / len(cerradas) * 100, 1) if cerradas else None,
+        "resultado_prom_pct": round(sum(r["resultado_pct"] for r in cerradas) / len(cerradas), 2) if cerradas else None,
+    }

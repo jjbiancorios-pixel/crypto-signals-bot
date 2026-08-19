@@ -932,6 +932,27 @@ def _cmd_comparar_bloqueadas() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_experimento_btc_lateral() -> str:
+    """
+    18/08 — Resumen del experimento "Opción 2" (BTC lateral + divergencia
+    propia = +2 en vez de +1) para el chequeo del viernes: cuántas veces
+    se aplicó, cuántas hicieron la diferencia real entre calificar o no,
+    y cómo les fue a esas.
+    """
+    r = db.resumen_experimento_btc_lateral()
+    if r.get("total", 0) == 0:
+        return "📊 Experimento BTC lateral: sin datos todavía."
+
+    lineas = [f"📊 <b>Experimento BTC lateral + divergencia propia</b> (Opción 2, desde el 18/08)\n"]
+    lineas.append(f"Veces que se aplicó el bono: {r['total']}")
+    lineas.append(f"Veces que hizo la diferencia (calificó SOLO por el bono): {r['veces_hizo_diferencia']}")
+    if r["n_cerradas_de_las_que_hicieron_diferencia"] > 0:
+        lineas.append(f"\nDe esas, cerradas: {r['n_cerradas_de_las_que_hicieron_diferencia']} | win rate {r['win_rate_pct']}% | resultado prom {r['resultado_prom_pct']}%")
+    else:
+        lineas.append("\n⚠️ Ninguna de las que hicieron la diferencia cerró todavía — esperar más.")
+    return "\n".join(lineas)
+
+
 def _cmd_historial() -> str:
     dias = db.resumen_por_dia_detalle()
     if not dias:
@@ -1203,6 +1224,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_motivo_no_apertura()
     elif cmd == "/comparar_bloqueadas":
         return _cmd_comparar_bloqueadas()
+    elif cmd == "/experimento_btc_lateral":
+        return _cmd_experimento_btc_lateral()
     elif cmd == "/historial":
         return _cmd_historial()
     elif cmd == "/probar_pionex":
@@ -1299,6 +1322,9 @@ def procesar_comando(texto: str) -> str:
             "/comparar_bloqueadas\n"
             "  📊 Rendimiento real vs. bloqueadas por falta de lugar, lado\n"
             "  a lado, mismo período — con lectura automática incluida.\n\n"
+            "/experimento_btc_lateral\n"
+            "  📊 Resultado del experimento BTC lateral + divergencia\n"
+            "  propia (Opción 2) — para el chequeo del viernes.\n\n"
             "/historial\n"
             "  Ganancia/pérdida por día, últimos 30 días.\n\n"
             "/probar_pionex PAR PRECIO_ACTUAL\n"

@@ -587,6 +587,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         razones.append(f"⚠️ Cruce MACD en contra de la señal")
     elif abs(mc15["hist"])>0: score+=1; razones.append(f"⚡ MACD momentum")
 
+    bono_btc_lateral = False  # 18/08: default — solo True cuando de verdad se aplicó el bono del experimento
     if forzar_corto:
         score+=2; razones.append(f"✅ BTC caída brusca → CORTO forzado")
     elif forzar_largo:
@@ -596,7 +597,19 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     elif btc["estado"]=="BAJO_RANGEA":
         score+=(2 if precio<e20_15 else 1); razones.append(f"✅ BTC post-baja rangeando → CORTO")
     elif btc["estado"]=="LATERAL":
-        score+=1; razones.append(f"✅ BTC lateral")
+        # 18/08 (Opción 2 del experimento "BTC lateral"): antes daba
+        # siempre +1 fijo, ignorando si la moneda divergía fuerte por su
+        # cuenta (era un elif, nunca llegaba a mirar corr["diverge_fuerte"]
+        # en este caso). Ahora, si además diverge fuerte, da +2 (mismo
+        # peso que BTC post-suba/baja rangeando). bono_btc_lateral queda
+        # registrado en el resultado para poder comparar el viernes contra
+        # el escenario sin el cambio (score - 1 en los casos con bono).
+        if corr["diverge_fuerte"]:
+            score+=2; razones.append(f"✅ BTC lateral + movimiento propio fuerte: {corr['mov_propio']}%")
+            bono_btc_lateral = True
+        else:
+            score+=1; razones.append(f"✅ BTC lateral")
+            bono_btc_lateral = False
     elif corr["diverge_fuerte"]:
         score+=1; razones.append(f"✅ Movimiento propio: {corr['mov_propio']}%")
 
@@ -620,6 +633,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     if vol_r>=1.2: score+=1; razones.append(f"✅ Volumen: {vol_r:.1f}x")
     elif vol_r>=0.7: score+=1; razones.append(f"⚡ Volumen normal: {vol_r:.1f}x")
 
+    score_sin_bono_lateral = score - 1 if bono_btc_lateral else score  # 18/08: para comparar el viernes vs. el escenario sin el cambio
     if score<MIN_SCORE_ALTA:
         # 18/08 — antes se descartaba en silencio, sin dejar ningún rastro
         # de cuánto le faltó ni qué criterio falló. Ahora devuelve info
@@ -627,7 +641,8 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         # caller decide qué hacer según el score (log liviano para todas,
         # seguimiento simulado completo para las que casi llegan).
         return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion_cand,
-                "razones": razones, "btc_estado": btc.get("estado"), "precio": precio}
+                "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
+                "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral}
 
     # 17/08: la señal calificó (score>=11) — recién ACÁ vale la pena
     # loguear el detalle completo de la cascada de precio (fuente que
@@ -681,6 +696,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         "sombra":{"multi_tf":sombra_multi_tf,"adx_gate":sombra_adx_gate,
                   "volumen":sombra_volumen,"vwap":sombra_vwap,
                   "cci":sombra_cci,"obv":sombra_obv},
+        "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral,  # 18/08: comparación viernes
         **grid,
     }
 
@@ -973,6 +989,12 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                              "apal": 10, "score": r["score"], "razones": r.get("razones")},
                             motivo_no_apertura=f"score_bajo_{r['score']}"
                         )
+                    # 18/08 — experimento "Opción 2" (BTC lateral + divergencia
+                    # propia): si el bono se aplicó, guardar para comparar el
+                    # viernes contra el escenario sin el cambio.
+                    if r.get("bono_btc_lateral"):
+                        db.guardar_experimento_btc_lateral(par, r["score"], r["score_sin_bono_lateral"],
+                                                            r.get("direccion_candidata"))
             except Exception as e:
                 print(f"  Error {par}: {e}")
             time.sleep(0.08)
@@ -1015,6 +1037,14 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
 
             senal_id = db.guardar_senal(r)
             db.guardar_log_sombra(senal_id, r["par"], r["direccion"], **r["sombra"])
+
+            # 18/08 — experimento "Opción 2": si esta señal (que SÍ
+            # calificó) tuvo el bono de BTC lateral + divergencia propia,
+            # guardar con su senal_id real — así el viernes podemos ver
+            # el resultado real de las que calificaron GRACIAS al bono.
+            if r.get("bono_btc_lateral"):
+                db.guardar_experimento_btc_lateral(r["par"], r["score"], r["score_sin_bono_lateral"],
+                                                    r.get("direccion"), senal_id)
 
             apertura_auto = None
             if AUTOMATIZACION_ACTIVA:
