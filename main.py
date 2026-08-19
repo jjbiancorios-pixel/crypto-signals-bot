@@ -1066,6 +1066,7 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
 
         enviadas=0
         aperturas_este_ciclo=0  # v16: tope de MAX_APERTURAS_POR_CICLO (1) en gestion_riesgo
+        candidatas_descartadas = []  # 19/08 — para poder decir EXACTAMENTE qué par y por qué, no un mensaje genérico
         for r in resultados[:MAX_ALERTAS]:
             # Evitar abrir una segunda grilla en un par que YA tiene una
             # operación sin cerrar — SOLO aplica con automatización activa,
@@ -1074,6 +1075,7 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
             # usuario siempre haga /cerrar, y si se olvida un solo par,
             # ese par queda bloqueado para siempre sin querer.
             if AUTOMATIZACION_ACTIVA and db.ultima_senal_par(r["par"]) is not None:
+                candidatas_descartadas.append(f"{r['par']} (ya tenía una señal/operación registrada)")
                 continue
 
             # Clave por VELA (15 min), no por hora: permite re-alertar el
@@ -1081,7 +1083,9 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
             # anterior ya cerró (rotación rápida de capital).
             vela = (datetime.now(TZ_ARG).minute // 15) * 15
             clave=f"{r['par']}_{datetime.now(TZ_ARG).strftime('%Y%m%d_%H')}{vela:02d}"
-            if db.alerta_existe(clave): continue
+            if db.alerta_existe(clave):
+                candidatas_descartadas.append(f"{r['par']} (alerta duplicada en esta misma vela de 15 min)")
+                continue
             db.marcar_alerta_enviada(clave)
 
             senal_id = db.guardar_senal(r)
@@ -1176,11 +1180,13 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
         # caído. Caso real: horas sin ningún mensaje pese a que el bot
         # sí estaba corriendo y analizando.
         if enviadas == 0 and not forzar_corto and not forzar_largo and btc["estado"]!="EN_MOVIMIENTO":
+            detalle_descarte = "\n".join(f"• {d}" for d in candidatas_descartadas) if candidatas_descartadas else "(sin detalle — revisar)"
             enviar_telegram(
                 f"📊 <b>Análisis {ahora} hs (ARG)</b>\n"
                 f"BTC: {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f}) | {btc['estado']}\n"
                 f"Objetivo: {obj['total']}% de {OBJETIVO_DIARIO}% | Faltan: {obj['faltan']}%\n"
-                f"{len(resultados)} candidata(s) con score alto, pero ya tenían señal registrada o repetida — sin alertas nuevas. Próximo en 15 min."
+                f"{len(resultados)} candidata(s) con score alto, sin alertas nuevas:\n{detalle_descarte}\n"
+                f"Próximo en 15 min."
             )
 
     except Exception as e:
