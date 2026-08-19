@@ -127,7 +127,14 @@ def OKX_PAR(p):
 def _velas_bybit(par, tf, n):
     url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={par}&interval={BYBIT_TF.get(tf,'15')}&limit={n}"
     r = requests.get(url, timeout=8)
-    data = r.json()
+    try:
+        data = r.json()
+    except Exception:
+        # 19/08 — diagnóstico: antes esto tiraba "Expecting property name..."
+        # sin mostrar qué mandó Bybit de verdad. Loguea el cuerpo real
+        # (recortado) para poder investigar la causa real, no adivinar de
+        # nuevo (ya nos pasó con el caso XMR/delisting).
+        raise ValueError(f"bybit no-json (status={r.status_code}): {r.text[:150]!r}")
     if data.get("retCode") != 0: raise ValueError("bybit fail")
     rows = data["result"]["list"]
     if not rows or len(rows) < 20: raise ValueError("bybit empty")
@@ -176,7 +183,10 @@ def get_velas(par, tf, n=100, verbose=False):
 
 def _precio_bybit(par):
     r = requests.get(f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={par}", timeout=6)
-    data = r.json()
+    try:
+        data = r.json()
+    except Exception:
+        raise ValueError(f"bybit no-json (status={r.status_code}): {r.text[:150]!r}")
     if data.get("retCode") != 0: raise ValueError()
     return float(data["result"]["list"][0]["lastPrice"])
 
@@ -216,6 +226,23 @@ def get_precio(par, verbose=False):
     if verbose:
         print(f"💲 {par}: las 3 fuentes fallaron, sin precio.")
     return None
+
+
+def comparar_fuentes_precio(par: str) -> dict:
+    """
+    19/08 — Diagnóstico: consulta las 3 fuentes SIN cascada (todas, no
+    para en la primera que responde) — para investigar con evidencia
+    real casos como XMR (venía dando ~118 vía Binance, muy lejos del
+    precio real ~416, sin causa confirmada todavía).
+    """
+    resultado = {}
+    for f in (_precio_bybit, _precio_okx, _precio_binance):
+        nombre = f.__name__.replace("_precio_", "")
+        try:
+            resultado[nombre] = f(par)
+        except Exception as e:
+            resultado[nombre] = f"ERROR: {e}"
+    return resultado
 
 
 # ── Indicadores ────────────────────────────────────────────
@@ -1141,6 +1168,20 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
             print(f"  ✅ {r['par']} {r['direccion']} score={r['score']}")
 
         print(f"[{ahora}] {enviadas} alertas enviadas.")
+
+        # 19/08 (FIX) — antes, si había candidatos (score≥11) pero
+        # ninguno terminaba en alerta nueva (todos ya tenían señal
+        # registrada, o la clave de vela ya existía), NO se mandaba
+        # ningún mensaje — silencio total, indistinguible de un bot
+        # caído. Caso real: horas sin ningún mensaje pese a que el bot
+        # sí estaba corriendo y analizando.
+        if enviadas == 0 and not forzar_corto and not forzar_largo and btc["estado"]!="EN_MOVIMIENTO":
+            enviar_telegram(
+                f"📊 <b>Análisis {ahora} hs (ARG)</b>\n"
+                f"BTC: {btc['emoji']} {btc['resumen']} (${btc['precio']:,.0f}) | {btc['estado']}\n"
+                f"Objetivo: {obj['total']}% de {OBJETIVO_DIARIO}% | Faltan: {obj['faltan']}%\n"
+                f"{len(resultados)} candidata(s) con score alto, pero ya tenían señal registrada o repetida — sin alertas nuevas. Próximo en 15 min."
+            )
 
     except Exception as e:
         print(f"ERROR CRÍTICO: {e}")

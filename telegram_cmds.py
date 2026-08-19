@@ -1058,6 +1058,28 @@ def _cmd_probar_pionex(args: list) -> str:
         return f"⚠️ Error al conectar con Pionex: {e}"
 
 
+def _cmd_comparar_precio(args: list) -> str:
+    """
+    19/08 — Consulta las 3 fuentes de precio (Bybit/OKX/Binance) para un
+    par, SIN cascada (todas, no la primera que responde) — para
+    investigar con evidencia real casos como XMR (venía dando ~118 vía
+    Binance, muy lejos del precio real ~416, sin causa confirmada).
+    Uso: /comparar_precio PAR
+    """
+    if not args:
+        return "Uso: /comparar_precio PAR\nEj: /comparar_precio XMRUSDT"
+    par = args[0].upper().strip()
+    if not par.endswith("USDT"):
+        par += "USDT"
+
+    import main
+    resultado = main.comparar_fuentes_precio(par)
+    lineas = [f"🔍 <b>Comparación de fuentes — {par}</b>\n"]
+    for fuente, valor in resultado.items():
+        lineas.append(f"{fuente}: {valor}")
+    return "\n".join(lineas)
+
+
 def _cmd_pausar_todo(args: list) -> str:
     motivo = " ".join(args) if args else "sin motivo especificado"
     db.pausar_todo(motivo)
@@ -1249,6 +1271,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_historial()
     elif cmd == "/probar_pionex":
         return _cmd_probar_pionex(args)
+    elif cmd == "/comparar_precio":
+        return _cmd_comparar_precio(args)
     elif cmd == "/pausar_todo":
         return _cmd_pausar_todo(args)
     elif cmd == "/reanudar_todo":
@@ -1352,6 +1376,9 @@ def procesar_comando(texto: str) -> str:
             "/probar_pionex PAR PRECIO_ACTUAL\n"
             "  Prueba la conexión con Pionex (sin crear orden real).\n"
             "  Ej: /probar_pionex BTC 63000\n\n"
+            "/comparar_precio PAR\n"
+            "  🔍 Compara Bybit/OKX/Binance para un par, sin cascada —\n"
+            "  para investigar precios sospechosos. Ej: /comparar_precio XMR\n\n"
             "/pausar_todo [motivo]\n"
             "  🛑 Frena TODO el bot (alertas y aperturas automáticas).\n"
             "  No afecta operaciones ya abiertas en Pionex.\n\n"
