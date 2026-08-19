@@ -1284,7 +1284,11 @@ def procesar_comando(texto: str) -> str:
     elif cmd == "/escanear":
         return _cmd_escanear(args)
     elif cmd in ("/ayuda", "/help", "/start"):
-        return (
+        # 19/08 (FIX CRÍTICO) — el texto de ayuda superó los 4096
+        # caracteres de Telegram (4379), lo que hacía que /ayuda fallara
+        # en SILENCIO TOTAL (sendMessage rechaza el mensaje, y enviar()
+        # no chequeaba el resultado). Dividido en 2 mensajes.
+        enviar(
             "🤖 <b>Comandos disponibles</b>\n\n"
             "/registrar PAR APAL RANGO_BAJO RANGO_ALTO GRILLAS\n"
             "  Anotá lo que Pionex te ofreció al crear el bot.\n"
@@ -1331,6 +1335,9 @@ def procesar_comando(texto: str) -> str:
             "/estrategias_imbalance\n"
             "  📊 5 estrategias direccionales (sin martingala) calculadas\n"
             "  retroactivamente con los datos ya guardados, comisión incluida.\n\n"
+        )
+        enviar(
+            "🤖 <b>Comandos de análisis / diagnóstico (parte 2/2)</b>\n\n"
             "/martingala\n"
             "  🎲 Cinturón BingX-martingala en modo sombra — 2 variantes\n"
             "  (imbalance fresco vs. guion fijo), sin capital real.\n\n"
@@ -1390,6 +1397,7 @@ def procesar_comando(texto: str) -> str:
             "  🔍 Busca a demanda las mejores candidatas ahora mismo (no abre nada).\n"
             "  Tarda un rato (recorre ~80 pares). Ej: /escanear 5"
         )
+        return ""
     # 16/08 (FIX): antes, un comando que no coincidía exacto con ninguno
     # de los de arriba devolvía None en silencio — sin error, sin aviso,
     # nada. Caso real: /rapidas_vs_extensas "no respondía" y después de
