@@ -234,6 +234,35 @@ def _precio_binance(par):
     r = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={par}", timeout=6)
     return float(r.json()["price"])
 
+def obtener_precio_pionex_directo(par: str):
+    """
+    19/08 — Precio directo de PIONEX (endpoint público GET
+    /api/v1/market/tickers), NO de la cascada externa Bybit/OKX/Binance.
+    Se usa para la verificación de seguridad de rango al abrir una
+    grilla real: caso real confirmado — la cascada externa dio ~118 para
+    XMR (vs. el precio real ~414) de forma CONSISTENTE en ambas consultas
+    (la de calcular_grid Y la de la verificación de seguridad, que usaba
+    obtener_precio_mercado — misma cascada, mismo dato malo, ninguna
+    discrepancia detectada). Pionex mismo, siendo su propio motor de
+    trading, siempre tiene el precio real correcto — endpoint público,
+    sin necesidad de firma.
+    """
+    base = par.replace("USDT", "")
+    symbol = f"{base}_USDT_PERP"
+    url = f"{PIONEX_BASE_URL}/api/v1/market/tickers?symbol={symbol}"
+    try:
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        if not data.get("result"):
+            return None
+        tickers = data.get("data", {}).get("tickers", [])
+        if not tickers:
+            return None
+        return float(tickers[0]["close"])
+    except Exception:
+        return None
+
+
 def obtener_precio_mercado(par):
     """
     v16 (28/07): precio de mercado en tiempo real, independiente de main.py

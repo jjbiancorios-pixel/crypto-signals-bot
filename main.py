@@ -788,16 +788,20 @@ def _abrir_grilla_automatica(r: dict, check: dict):
     # calcular el rango vino mal por una causa que no se pudo confirmar
     # (la hipótesis inicial de que XMR estaba delistado de Binance/OKX
     # resultó ser FALSA, Juanjo lo confirmó viendo el par listado en vivo
-    # — no repetir esa explicación). Se agregó logging detallado de la
-    # cascada de precios (ver get_precio/get_velas, verbose=True) para
-    # diagnosticar mejor si vuelve a pasar. Mientras tanto, esta
-    # verificación de seguridad queda como protección independiente de
-    # la causa real: antes de abrir CUALQUIER grilla real, se verifica el
-    # precio de mercado ACTUAL (consulta fresca, independiente del que se
-    # usó para calcular el rango) — si está muy lejos del rango
-    # calculado, se aborta en vez de abrir una posición rota.
+    # — no repetir esa explicación).
+    #
+    # 19/08 (FIX REAL): el mismo bug volvió a pasar CON esta verificación
+    # ya activa — se descubrió por qué no lo atrapaba: usaba
+    # obtener_precio_mercado(), que consulta la MISMA cascada externa
+    # Bybit/OKX/Binance que calculó el rango original. Si esa cascada
+    # tiene un problema de datos persistente para un par (como XMR),
+    # ambas consultas devuelven el MISMO valor malo — comparando algo
+    # mal contra sí mismo, nunca hay discrepancia. Corregido: ahora
+    # compara contra obtener_precio_pionex_directo() — el precio de
+    # PIONEX MISMO (su propio motor de trading, vía endpoint público),
+    # totalmente independiente de la cascada externa.
     try:
-        precio_real_actual = pionex_api.obtener_precio_mercado(r["par"])
+        precio_real_actual = pionex_api.obtener_precio_pionex_directo(r["par"])
     except Exception:
         precio_real_actual = None
     if precio_real_actual is not None:
@@ -806,10 +810,14 @@ def _abrir_grilla_automatica(r: dict, check: dict):
         techo_aceptable = r["rango_alto"] + margen_tolerancia
         if not (piso_aceptable <= precio_real_actual <= techo_aceptable):
             return None, (
-                f"🚨 ABORTADO — el precio real de mercado ({precio_real_actual}) está muy lejos del "
+                f"🚨 ABORTADO — el precio REAL de Pionex ({precio_real_actual}) está muy lejos del "
                 f"rango calculado ({r['rango_bajo']}-{r['rango_alto']}) — probable dato de precio erróneo "
                 f"al armar la señal (ver caso real XMRUSDT). NO se abrió la grilla. Revisar el par manualmente."
             )
+    else:
+        # 19/08 — si Pionex mismo no responde, no abrir a ciegas: sin
+        # verificación real, es mejor abortar que arriesgar otro caso XMR.
+        return None, "🚨 ABORTADO — no se pudo confirmar el precio real de Pionex antes de abrir. NO se abrió la grilla, por seguridad."
 
     # 17/08 — Reintento automático ante BOT_INTERNAL_ERROR de Pionex (caso
     # real: INJUSDT, señal de score 11/16 perdida por completo porque

@@ -1080,7 +1080,35 @@ def _cmd_comparar_precio(args: list) -> str:
     return "\n".join(lineas)
 
 
-def _cmd_senales_fantasma() -> str:
+def _cmd_estado_piso(args: list) -> str:
+    """
+    19/08 — Diagnóstico directo: muestra el estado REAL que nuestro
+    sistema tiene guardado para el piso ascendente de un par (mejor
+    resultado trackeado, piso ya fijado, bu_order_id) — para confirmar
+    si el problema es que no se está corriendo el chequeo, o que corre
+    pero algo específico de esa posición no dispara el piso.
+    Uso: /estado_piso PAR
+    """
+    if not args:
+        return "Uso: /estado_piso PAR\nEj: /estado_piso ACE"
+    par = args[0].upper().strip()
+    if not par.endswith("USDT"):
+        par += "USDT"
+
+    op = db.ultima_senal_par(par)
+    if not op:
+        return f"⚠️ {par}: no hay ninguna señal abierta registrada para este par."
+
+    return (
+        f"🔍 <b>Estado del piso ascendente — {par}</b>\n\n"
+        f"senal_id: {op['id']}\n"
+        f"bu_order_id: {op.get('bu_order_id') or '❌ NINGUNO — sin esto, el chequeo rápido NUNCA la ve'}\n"
+        f"mejor_resultado_pct (MFE trackeado): {op.get('mejor_resultado_pct')}\n"
+        f"piso_ganancia_actual (SL real ya fijado por nosotros): {op.get('piso_ganancia_actual') or 'NUNCA se subió — piso todavía sin activar'}\n"
+        f"checkpoint_perdida_evaluado: {op.get('checkpoint_perdida_evaluado')}"
+    )
+
+
     """
     19/08 — Lista las señales con cerrado=0 pero SIN bu_order_id (por
     diseño, imposible que sean una posición real) — bloquean su par de
@@ -1298,6 +1326,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_probar_pionex(args)
     elif cmd == "/comparar_precio":
         return _cmd_comparar_precio(args)
+    elif cmd == "/estado_piso":
+        return _cmd_estado_piso(args)
     elif cmd == "/senales_fantasma":
         return _cmd_senales_fantasma()
     elif cmd == "/limpiar_fantasmas":
@@ -1415,6 +1445,9 @@ def procesar_comando(texto: str) -> str:
             "/comparar_precio PAR\n"
             "  🔍 Compara Bybit/OKX/Binance para un par, sin cascada —\n"
             "  para investigar precios sospechosos. Ej: /comparar_precio XMR\n\n"
+            "/estado_piso PAR\n"
+            "  🔍 Estado real del piso ascendente para un par — MFE\n"
+            "  trackeado, piso ya fijado, bu_order_id. Ej: /estado_piso ACE\n\n"
             "/senales_fantasma\n"
             "  👻 Lista señales que bloquean su par de por vida (bug del\n"
             "  19/08, corregido para casos nuevos, esto limpia las viejas).\n\n"
