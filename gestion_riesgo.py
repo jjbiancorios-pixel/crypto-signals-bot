@@ -386,25 +386,47 @@ def _procesar_piso_ganancia(op: dict, resultado_actual: float, pico_actual: floa
 def chequeo_rapido_ganancia_v17() -> list:
     """
     v17 — Chequeo MÁS FRECUENTE (cada 15seg vía main.py, no cada 1 min)
-    SOLO para posiciones que ya cruzaron el primer nivel de ganancia
-    (1.35%+) — no le pega a todas las posiciones, solo a las que
-    necesitan que el piso ascendente reaccione rápido a un retroceso.
+    para TODAS las posiciones abiertas: evalúa tanto el piso ascendente
+    de ganancia (solo si ya cruzó 1.35%) COMO los checkpoints de pérdida
+    con análisis técnico — antes esto último solo corría en el loop
+    lento de 1 min. Caso real: RUNEUSDT pasó de +5.32% a -10.64% en 9
+    minutos — para cuando el loop de 1 min evaluó el checkpoint de -6%,
+    el precio real ya estaba mucho más abajo. Con el chequeo cada 15seg,
+    se evalúa mucho más cerca del checkpoint real, no varios minutos tarde.
+
+    19/08 — Logging agregado en cada punto de decisión (antes tragaba en
+    silencio si calcular_resultado_desglosado fallaba o daba None — caso
+    real: ACEUSDT llegó a +9.69% y el piso nunca se activó, sin ningún
+    rastro en logs de por qué). Ahora cada motivo de "no hizo nada" queda
+    impreso, para diagnosticar con certeza la próxima vez que pase.
     """
     acciones = []
     abiertas = db.operaciones_abiertas_con_bu_order()
     for op in abiertas:
-        mejor = op.get("mejor_resultado_pct")
-        if mejor is None or mejor < 1.35:
-            continue
-
+        par = op.get("par", "?")
         bu_order_id = op.get("bu_order_id")
-        par = op["par"]
         try:
             desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, par=par, capital_total_real=op.get("capital_asignado"))
             resultado_actual = desglose["total_pct"] if desglose else None
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ {par}: calcular_resultado_desglosado falló en el chequeo rápido — {e}")
             resultado_actual = None
         if resultado_actual is None:
+            print(f"⚠️ {par}: resultado_actual quedó en None (desglose vacío o falló) — se salta este ciclo de 15seg.")
+            continue
+
+        # Lado pérdida: checkpoints con análisis técnico, cada 15seg (no
+        # esperar al loop de 1 min, que puede llegar tarde en caídas rápidas).
+        if resultado_actual < 0:
+            mensaje_perdida = _procesar_checkpoint_perdida(op, resultado_actual, bu_order_id)
+            if mensaje_perdida:
+                acciones.append(mensaje_perdida)
+                if "cerrada en checkpoint" in mensaje_perdida:
+                    continue  # ya cerró, no seguir procesando el lado ganancia para esta posición
+
+        # Lado ganancia: piso ascendente, solo si ya cruzó 1.35%.
+        mejor = op.get("mejor_resultado_pct")
+        if mejor is None or mejor < 1.35:
             continue
 
         pico_actual = max(resultado_actual, mejor)
@@ -412,6 +434,7 @@ def chequeo_rapido_ganancia_v17() -> list:
             db.actualizar_mejor_resultado(op["id"], pico_actual)
 
         mensaje = _procesar_piso_ganancia(op, resultado_actual, pico_actual, bu_order_id)
+        print(f"🔧 {par}: resultado_actual={resultado_actual:.2f}%, pico={pico_actual:.2f}%, piso_actual_fijado={op.get('piso_ganancia_actual')} -> {mensaje or '(sin cambios, ya está en el piso correcto)'}")
         if mensaje:
             acciones.append(mensaje)
     return acciones

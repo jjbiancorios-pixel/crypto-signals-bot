@@ -758,7 +758,20 @@ def modificar_stop_loss(bu_order_id: str, nuevo_lossstop_pct: float) -> dict:
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
     resp = requests.post(url, headers=headers, data=body_json, timeout=15)
-    return resp.json()
+    data = resp.json()
+    # 19/08 (FIX CRÍTICO) — antes esto devolvía data tal cual, sin
+    # chequear result. Si Pionex RECHAZABA el pedido (ej. por el nombre
+    # de campo lossStopType sin confirmar, o cualquier otro motivo), el
+    # código que llama a esta función seguía de largo como si hubiera
+    # funcionado — guardaba "piso subido" en la base y mandaba el
+    # mensaje de éxito, mientras el SL real en Pionex JAMÁS cambiaba.
+    # Casos reales confirmados por Juanjo viendo la app: ACEUSDT y
+    # RUNEUSDT — el mensaje decía "piso subido", pero en Pionex seguía
+    # el -15% original. RUNEUSDT terminó cerrando en -10.64% real por
+    # esto — la ganancia de +5.32% nunca estuvo realmente protegida.
+    if not data.get("result"):
+        raise RuntimeError(f"Pionex rechazó el cambio de SL: {data}")
+    return data
 
 
 def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
