@@ -2936,3 +2936,35 @@ def resumen_frescura_velas() -> dict:
             "minimo_min": round(min(valores), 2),
         }
     return {"total": len(filas), "por_fuente": resumen}
+
+
+def listar_senales_fantasma() -> list:
+    """
+    19/08 — Señales con cerrado=0 pero SIN bu_order_id: es IMPOSIBLE que
+    sean una posición real (bu_order_id solo se graba cuando Pionex
+    confirma una apertura real vía guardar_bu_order_id) — por diseño,
+    estas SIEMPRE son fantasmas: quedaron así por el bug donde una
+    apertura fallida (verificación de seguridad, error de Pionex, tope de
+    posiciones) no cerraba la señal original, bloqueando el par de por
+    vida. Corregido el 19/08 para casos NUEVOS — esto es para limpiar
+    las que ya habían quedado pegadas de ANTES del fix.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, par, fecha, hora_alerta, score, direccion
+        FROM senales
+        WHERE cerrado = 0 AND bu_order_id IS NULL
+        ORDER BY id
+    """)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    return filas
+
+
+def limpiar_senales_fantasma() -> int:
+    """19/08 — Cierra todas las señales fantasma (ver listar_senales_fantasma) de una sola vez. Devuelve cuántas se cerraron."""
+    fantasmas = listar_senales_fantasma()
+    for f in fantasmas:
+        cerrar_senal_automatica(f["id"], 0, motivo="fantasma_limpiada_19_08")
+    return len(fantasmas)

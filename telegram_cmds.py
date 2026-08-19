@@ -1080,6 +1080,31 @@ def _cmd_comparar_precio(args: list) -> str:
     return "\n".join(lineas)
 
 
+def _cmd_senales_fantasma() -> str:
+    """
+    19/08 — Lista las señales con cerrado=0 pero SIN bu_order_id (por
+    diseño, imposible que sean una posición real) — bloquean su par de
+    por vida por el bug encontrado el 19/08. Ver antes de limpiar con
+    /limpiar_fantasmas.
+    """
+    fantasmas = db.listar_senales_fantasma()
+    if not fantasmas:
+        return "✅ No hay señales fantasma — todo limpio."
+    lineas = [f"👻 <b>{len(fantasmas)} señal(es) fantasma encontrada(s)</b> (bloqueando su par de por vida)\n"]
+    for f in fantasmas:
+        lineas.append(f"{f['par']}: score {f['score']} | {f['direccion']} | {f['fecha']} {f['hora_alerta']}")
+    lineas.append("\n💡 Corré /limpiar_fantasmas para cerrarlas todas y liberar esos pares.")
+    return "\n".join(lineas)
+
+
+def _cmd_limpiar_fantasmas() -> str:
+    """19/08 — Cierra TODAS las señales fantasma de una sola vez, liberando los pares bloqueados."""
+    n = db.limpiar_senales_fantasma()
+    if n == 0:
+        return "✅ No había ninguna señal fantasma para limpiar."
+    return f"✅ {n} señal(es) fantasma cerrada(s) — esos pares ya están libres para la próxima señal."
+
+
 def _cmd_pausar_todo(args: list) -> str:
     motivo = " ".join(args) if args else "sin motivo especificado"
     db.pausar_todo(motivo)
@@ -1273,6 +1298,10 @@ def procesar_comando(texto: str) -> str:
         return _cmd_probar_pionex(args)
     elif cmd == "/comparar_precio":
         return _cmd_comparar_precio(args)
+    elif cmd == "/senales_fantasma":
+        return _cmd_senales_fantasma()
+    elif cmd == "/limpiar_fantasmas":
+        return _cmd_limpiar_fantasmas()
     elif cmd == "/pausar_todo":
         return _cmd_pausar_todo(args)
     elif cmd == "/reanudar_todo":
@@ -1386,6 +1415,11 @@ def procesar_comando(texto: str) -> str:
             "/comparar_precio PAR\n"
             "  🔍 Compara Bybit/OKX/Binance para un par, sin cascada —\n"
             "  para investigar precios sospechosos. Ej: /comparar_precio XMR\n\n"
+            "/senales_fantasma\n"
+            "  👻 Lista señales que bloquean su par de por vida (bug del\n"
+            "  19/08, corregido para casos nuevos, esto limpia las viejas).\n\n"
+            "/limpiar_fantasmas\n"
+            "  🧹 Cierra TODAS las señales fantasma de una — libera los pares.\n\n"
             "/pausar_todo [motivo]\n"
             "  🛑 Frena TODO el bot (alertas y aperturas automáticas).\n"
             "  No afecta operaciones ya abiertas en Pionex.\n\n"
