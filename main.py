@@ -941,7 +941,14 @@ def intentar_reapertura(candidato: dict):
         )
         print(f"  ✅ Reapertura #{nuevo_num} {par} {r['direccion']}")
     else:
+        # 19/08 (FIX) — mismo bug que en generar_alertas(): si la
+        # apertura falla acá, la señal de la reapertura (creada arriba)
+        # quedaba con cerrado=0 para siempre, bloqueando el par de por
+        # vida — un segundo camino al mismo problema que no se había
+        # revisado. Se cierra la señal fantasma explícitamente.
+        db.cerrar_senal_automatica(senal_id, 0, motivo="reapertura_fallida")
         print(f"  ⚠️ Reapertura {par}: {mensaje}")
+        enviar_telegram(f"⚠️ Reapertura {par} falló y quedó descartada — {mensaje}")
 
 
 def _loguear_frescura_velas():
@@ -975,6 +982,20 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
             return
 
         _loguear_frescura_velas()  # 18/08 — mide antes de arrancar el análisis en sí
+
+        # 19/08 — Limpieza de señales fantasma AL INICIO de cada ciclo
+        # (cada 15 min, no cada 30) — antes de escanear los 94 pares. Si
+        # se dejaba solo en el schedule aparte de 30 min, una señal nueva
+        # y válida podía perderse igual durante la ventana de espera
+        # (misma "ya tenía señal registrada" que causó todo esto). Acá
+        # queda garantizado que ningún par arranca el ciclo bloqueado por
+        # una fantasma que ya se podría haber limpiado.
+        try:
+            n_fantasmas = db.limpiar_senales_fantasma()
+            if n_fantasmas > 0:
+                enviar_telegram(f"🧹 Limpieza automática: {n_fantasmas} señal(es) fantasma cerrada(s), pares liberados.")
+        except Exception as e:
+            print(f"Error limpiando fantasmas al inicio del ciclo: {e}")
 
         ahora=hora_arg()
         print(f"\n[{ahora}] Analizando {len(PARES)} pares...")
@@ -1387,6 +1408,11 @@ def main():
             except Exception as e:
                 print(f"Error en chequeo de huérfanas: {e}")
         schedule.every(30).minutes.do(_chequeo_huerfanas)
+
+        # 19/08 — El chequeo de señales fantasma se movió al INICIO de
+        # cada ciclo de análisis (cada 15 min, en generar_alertas) — no
+        # hace falta un schedule aparte acá, sería redundante y corre
+        # menos seguido (cada 30 min) que el ciclo normal.
 
         # 01/08: intento "principal" a las 00:01 ARG (=03:01 UTC, servidor
         # corre en UTC) — normalmente alcanza con este, el de _monitorear()
