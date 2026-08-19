@@ -1194,8 +1194,14 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                     funding_txt=f"\n💹 Funding rate: verificá en Pionex antes de abrir"
             except: pass
 
+            estado_apertura_prominente = (
+                "✅ <b>ABIERTA AUTOMÁTICAMENTE</b>" if (AUTOMATIZACION_ACTIVA and apertura_auto and "✅" in apertura_auto)
+                else "⛔ <b>NO SE ABRIÓ — solo señal informativa</b>" if AUTOMATIZACION_ACTIVA
+                else "📝 <b>MODO MANUAL — registrala vos con /registrar</b>"
+            )
             msg=(
-                f"🚨 <b>━━ SEÑAL GRID — PROB. ALTA ━━</b>\n\n"
+                f"🚨 <b>━━ SEÑAL GRID — PROB. ALTA ━━</b>\n"
+                f"{estado_apertura_prominente}\n\n"
                 f"📌 <b>{r['par']}</b>  {r['direccion']}\n"
                 f"🎰 Score: {r['score']}/{r['score_max']} | {r['prob']}\n\n"
                 f"── <b>ACCIÓN INMEDIATA</b> ──\n"
@@ -1494,7 +1500,7 @@ def main():
                 enviar_telegram(accion)
         except Exception as e:
             print(f"Error en chequeo rápido de ganancia v17: {e}")
-    schedule.every(15).seconds.do(_chequeo_rapido_ganancia_v17)
+    schedule.every(5).seconds.do(_chequeo_rapido_ganancia_v17)
 
     if en_horario_operativo():
         generar_alertas()
@@ -1510,7 +1516,7 @@ def main():
         # un job de 15s terminaba corriendo a la misma cadencia que todo
         # lo demás. Ahora duerme 10s — liviano, no debería afectar nada
         # más (de paso, Telegram también se revisa más seguido).
-        time.sleep(10)
+        time.sleep(4)
 
 if __name__=="__main__":
     main()

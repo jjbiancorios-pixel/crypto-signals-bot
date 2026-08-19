@@ -497,13 +497,27 @@ def cerrar_grilla_futuros(bu_order_id: str, nota: str = "Cierre automático") ->
     Usar para el cierre automático a las 10hs (o cualquier cierre forzado
     por lógica propia, no por TP). closeSellModel=TO_QUOTE es el default
     de Pionex (cierra la posición, no vende a USDT automáticamente).
+
+    19/08 (FIX CRÍTICO, doble):
+    1) Se sacó "immediate": True — según la documentación oficial, ese
+       flag es una recuperación especial SOLO válida cuando la orden ya
+       está en estado close_position con un límite TP/SL trabado sin
+       llenar. En cualquier posición corriendo normalmente (nuestro caso
+       siempre: checkpoints, piso ascendente, liberación, red de
+       seguridad), Pionex lo RECHAZA con "Forbidden: invalid status".
+    2) Como antes no se chequeaba result, ese rechazo quedaba invisible
+       — nuestro sistema marcaba la señal como cerrada en NUESTRA base
+       (dejando de monitorearla) mientras la posición real seguía viva
+       en Pionex sin nadie vigilándola. Caso real sospechoso: JTOUSDT
+       llegó a +1.9% real, el piso debía cerrarla, pero terminó cayendo
+       a +0.39% antes de que Juanjo la cerrara a mano — coincide
+       exactamente con este patrón.
     """
     path = "/api/v1/bot/orders/futuresGrid/cancel"
     body_dict = {
         "buOrderId": bu_order_id,
         "closeNote": nota,
         "closeSellModel": "TO_QUOTE",
-        "immediate": True,
         "closeSlippage": "0.01",
     }
     body_json = json.dumps(body_dict, separators=(",", ":"))
@@ -516,7 +530,10 @@ def cerrar_grilla_futuros(bu_order_id: str, nota: str = "Cierre automático") ->
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
     resp = requests.post(url, headers=headers, data=body_json, timeout=15)
-    return resp.json()
+    data = resp.json()
+    if not data.get("result"):
+        raise RuntimeError(f"Pionex rechazó el cierre: {data}")
+    return data
 
 
 def calcular_resultado_actual(bu_order_id: str, par: str = None, capital_total_real: float = None):
