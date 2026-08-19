@@ -565,14 +565,14 @@ def calcular_resultado_actual(bu_order_id: str, par: str = None, capital_total_r
         no_realizado_usd = 0.0
         base_amount = float(bod.get("baseAmount", 0) or 0)
         position_open_price = float(bod.get("positionOpenPrice", 0) or 0)
-        if base_amount > 0 and position_open_price > 0 and par:
+        if abs(base_amount) > 0 and position_open_price > 0 and par:
             precio_actual = obtener_precio_mercado(par)
             if precio_actual is not None:
                 es_corto = bod.get("trend") == "short"
                 if es_corto:
-                    no_realizado_usd = base_amount * (position_open_price - precio_actual)
+                    no_realizado_usd = abs(base_amount) * (position_open_price - precio_actual)
                 else:
-                    no_realizado_usd = base_amount * (precio_actual - position_open_price)
+                    no_realizado_usd = abs(base_amount) * (precio_actual - position_open_price)
 
         return round(((margin_balance - init_investment) + no_realizado_usd) / quote_investment * 100, 4)
     except (ValueError, TypeError):
@@ -609,14 +609,14 @@ def calcular_resultado_desglosado(bu_order_id: str, par: str = None, capital_tot
         no_realizado_usd = 0.0
         base_amount = float(bod.get("baseAmount", 0) or 0)
         position_open_price = float(bod.get("positionOpenPrice", 0) or 0)
-        if base_amount > 0 and position_open_price > 0 and par:
+        if abs(base_amount) > 0 and position_open_price > 0 and par:
             precio_actual = obtener_precio_mercado(par)
             if precio_actual is not None:
                 es_corto = bod.get("trend") == "short"
                 if es_corto:
-                    no_realizado_usd = base_amount * (position_open_price - precio_actual)
+                    no_realizado_usd = abs(base_amount) * (position_open_price - precio_actual)
                 else:
-                    no_realizado_usd = base_amount * (precio_actual - position_open_price)
+                    no_realizado_usd = abs(base_amount) * (precio_actual - position_open_price)
 
         total_pct = round(((margin_balance - init_investment) + no_realizado_usd) / quote_investment * 100, 4)
         grid_profit_usd = float(bod.get("gridProfit", 0) or 0)
