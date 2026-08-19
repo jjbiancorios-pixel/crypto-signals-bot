@@ -336,51 +336,57 @@ def _procesar_checkpoint_perdida(op: dict, resultado_actual: float, bu_order_id:
     return None
 
 
+def _calcular_piso_ganancia(pico_actual: float):
+    """
+    19/08 — Calcula qué piso corresponde a un pico dado, SIN tocar
+    Pionex — solo el número. Separado de _procesar_piso_ganancia para
+    poder testear el cálculo puro aparte de la acción de cierre.
+    """
+    if pico_actual >= 1.85:
+        return round(pico_actual * (1 - RETROCESO_GANANCIA_PCT_V17), 4)
+    mejor_piso_aplicable = None
+    for nivel, piso in sorted(RATCHET_GANANCIA.items()):
+        if pico_actual >= nivel:
+            mejor_piso_aplicable = piso
+    return mejor_piso_aplicable
+
+
 def _procesar_piso_ganancia(op: dict, resultado_actual: float, pico_actual: float, bu_order_id: str):
     """
-    v17 — Si pico_actual alcanzó un nuevo nivel del ratchet de ganancia,
-    sube el SL real de Pionex (lossStop) al piso correspondiente — el
-    motor rápido de Pionex protege ese nivel, no nuestro monitoreo. Más
-    allá de 1.85%, usa retroceso proporcional del 20% del pico en vez de
-    niveles fijos.
+    v17 (REDISEÑADO 19/08) — Pionex NO permite modificar el lossStop de
+    una grilla YA ABIERTA vía API — confirmado contra la documentación
+    oficial completa: /adjustParams es para cambiar rango/inversión (por
+    eso pide top/bottom/row), no existe NINGÚN endpoint documentado para
+    ajustar SL/TP después de creada. El diseño anterior (modificar_stop_
+    loss vía adjustParams) no podía funcionar nunca — casos reales
+    ACEUSDT y RUNEUSDT lo confirmaron, siempre rechazado por Pionex.
+
+    Nuevo diseño: el piso ascendente lo gestionamos NOSOTROS — cerramos
+    la posición directamente apenas el resultado cae por debajo del piso
+    calculado, igual mecanismo que ya usamos con éxito para los
+    checkpoints de pérdida (mismo chequeo cada 15seg).
     """
-    piso_actual_fijado = op.get("piso_ganancia_actual")
-    senal_id = op["id"]
     par = op["par"]
+    senal_id = op["id"]
+    piso = _calcular_piso_ganancia(pico_actual)
+    if piso is None:
+        return None  # todavía no llegó a 1.35%, no hay piso que proteger
 
-    if pico_actual >= 1.85:
-        nuevo_piso = round(pico_actual * (1 - RETROCESO_GANANCIA_PCT_V17), 4)
-        if piso_actual_fijado is not None and nuevo_piso <= piso_actual_fijado:
-            return None
+    # Guardamos el piso calculado (informativo/comparación, ya no se
+    # manda a Pionex) para poder ver en /estado_piso qué esperábamos.
+    if op.get("piso_ganancia_actual") != piso:
+        db.actualizar_piso_ganancia(senal_id, piso)
+
+    if resultado_actual <= piso:
         try:
-            pionex_api.modificar_stop_loss(bu_order_id, nuevo_piso)
-            db.actualizar_piso_ganancia(senal_id, nuevo_piso)
+            pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"v17: piso ascendente, pico {pico_actual:+.2f}%, piso {piso:+.2f}%")
+            db.cerrar_senal_automatica(senal_id, resultado_actual, motivo="piso_ganancia")
             db.guardar_checkpoint_v17(senal_id, par, "ganancia", pico_actual, resultado_actual,
-                                       decision=f"piso subido a {nuevo_piso} (retroceso 20%)")
-            return f"📈 {par}: pico {pico_actual:+.2f}% — piso de Pionex subido a {nuevo_piso:+.2f}% (retroceso 20%)."
+                                       decision=f"cerrada en piso {piso} (pico {pico_actual})")
+            return f"📈 {par}: PISO ejecutado — pico {pico_actual:+.2f}%, cerrada en {resultado_actual:+.2f}% (piso {piso:+.2f}%)."
         except Exception as e:
-            return f"⚠️ {par}: quiso subir el piso a {nuevo_piso:+.2f}% pero falló ({e})."
-
-    mejor_piso_aplicable = None
-    mejor_nivel_aplicable = None
-    for nivel, piso_correspondiente in sorted(RATCHET_GANANCIA.items()):
-        if pico_actual >= nivel:
-            mejor_piso_aplicable = piso_correspondiente
-            mejor_nivel_aplicable = nivel
-
-    if mejor_piso_aplicable is None:
-        return None
-    if piso_actual_fijado is not None and piso_actual_fijado >= mejor_piso_aplicable:
-        return None
-
-    try:
-        pionex_api.modificar_stop_loss(bu_order_id, mejor_piso_aplicable)
-        db.actualizar_piso_ganancia(senal_id, mejor_piso_aplicable)
-        db.guardar_checkpoint_v17(senal_id, par, "ganancia", mejor_nivel_aplicable, resultado_actual,
-                                   decision=f"piso subido a {mejor_piso_aplicable}")
-        return f"📈 {par}: tocó {mejor_nivel_aplicable}% — piso de Pionex subido a {mejor_piso_aplicable:+.2f}%."
-    except Exception as e:
-        return f"⚠️ {par}: quiso subir el piso a {mejor_piso_aplicable:+.2f}% pero falló ({e})."
+            return f"⚠️ {par}: tocó el piso ({piso:+.2f}%) pero falló el cierre real ({e}) — REVISAR YA."
+    return None
 
 
 def chequeo_rapido_ganancia_v17() -> list:
