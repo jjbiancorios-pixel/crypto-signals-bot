@@ -51,6 +51,14 @@ CHECKPOINTS_PERDIDA = [-6.0, -9.0, -12.0]
 # un SL más chico, hasta 3%. Interruptor simple para no borrar el
 # código: en False, el único piso de pérdida activo es el -15% absoluto.
 CHECKPOINTS_PERDIDA_ACTIVOS = False
+# 19/08 — Esquema simple TEMPORAL pedido por Juanjo (TP fijo 1.35% + SL
+# fijo -3%, ambos nativos de Pionex, reemplazando el trailing/ratchet
+# complejo mientras se resuelve el desfasaje de detección). En True: la
+# lógica de piso ascendente/ratchet de abajo queda DESACTIVADA, se usa
+# en su lugar el chequeo simple de "tocó breakeven -> cerrar si retrocede
+# a -1.5%" (ver chequeo_rapido_ganancia_v17). Volver a False para
+# retomar el ratchet más adelante.
+ESQUEMA_SIMPLE_ACTIVO = True
 # v17 — Piso ascendente de ganancia (ratchet): una vez que el resultado
 # toca cada nivel, se sube el SL REAL de Pionex (lossStop) al piso
 # correspondiente — Pionex protege ese nivel con su motor rápido, no el
@@ -487,7 +495,32 @@ def chequeo_rapido_ganancia_v17() -> list:
                 if "cerrada en checkpoint" in mensaje_perdida:
                     continue  # ya cerró, no seguir procesando el lado ganancia para esta posición
 
-        # Lado ganancia: piso ascendente, solo si ya cruzó 1.35%.
+        # 19/08 (ESQUEMA SIMPLE, TEMPORAL) — Juanjo pidió reemplazar el
+        # trailing complejo por algo simple mientras se resuelve el
+        # desfasaje: SL inicial fijo -3% (nativo de Pionex, ya cubierto
+        # al crear), y si la ganancia tocó 0% o más en algún momento,
+        # nuestro sistema cierra si retrocede a -1.5% (Pionex no permite
+        # modificar su SL nativo en una posición corriendo).
+        if ESQUEMA_SIMPLE_ACTIVO:
+            mejor = op.get("mejor_resultado_pct")
+            if mejor is None or resultado_actual > mejor:
+                db.actualizar_mejor_resultado(op["id"], resultado_actual)
+                mejor = max(resultado_actual, mejor) if mejor is not None else resultado_actual
+            if mejor is not None and mejor >= 0 and resultado_actual <= pionex_api.SL_AJUSTADO_SIMPLE:
+                try:
+                    resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
+                        par, bu_order_id, resultado_actual, op.get("capital_asignado"),
+                        nota_pionex=f"esquema simple: tocó breakeven (mejor={mejor:+.2f}%), retrocedió a {pionex_api.SL_AJUSTADO_SIMPLE}%"
+                    )
+                    db.cerrar_senal_automatica(op["id"], resultado_real, motivo="sl_ajustado_simple")
+                    mensaje = f"🛑 {par}: SL ajustado ejecutado — tocó breakeven (mejor {mejor:+.2f}%), cerrada en {resultado_real:+.2f}%."
+                    acciones.append(mensaje + (f"\n{advertencia}" if advertencia else ""))
+                except Exception as e:
+                    acciones.append(f"⚠️ {par}: tocó el SL ajustado pero falló el cierre real ({e}) — REVISAR YA.")
+            continue
+
+        # Lado ganancia (esquema COMPLEJO, desactivado mientras
+        # ESQUEMA_SIMPLE_ACTIVO=True): piso ascendente, solo si ya cruzó 1.35%.
         mejor = op.get("mejor_resultado_pct")
         if mejor is None or mejor < 1.35:
             continue

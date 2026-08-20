@@ -830,6 +830,21 @@ def _abrir_grilla_automatica(r: dict, check: dict):
                 f"rango calculado ({r['rango_bajo']}-{r['rango_alto']}) — probable dato de precio erróneo "
                 f"al armar la señal (ver caso real XMRUSDT). NO se abrió la grilla. Revisar el par manualmente."
             )
+        # 19/08 (FIX REAL DE ENTRADA) — caso real: casi todas las
+        # operaciones abrían ya en -1% a -2% desde el arranque. Causa:
+        # r["precio"]/rango_bajo/rango_alto se calculan con el CIERRE de
+        # una vela de 15min en el momento del análisis — para cuando la
+        # orden real se manda (después de recorrer los 94 pares, uno por
+        # uno), pueden pasar varios minutos, tiempo de sobra para que el
+        # precio real se mueva 1-2%. El rango quedaba centrado en un
+        # precio viejo, no en el precio real de entrada. Ahora se
+        # RECALCULA el rango centrado en precio_real_actual (recién
+        # consultado, igual fórmula que calcular_grid), manteniendo el
+        # mismo ancho porcentual — la orden entra centrada en el precio
+        # de verdad, no en uno de hace varios minutos.
+        rango_pct_original = r["rango_pct"]
+        rango_bajo_fresco = round(precio_real_actual * (1 - rango_pct_original / 100), 6)
+        rango_alto_fresco = round(precio_real_actual * (1 + rango_pct_original / 100), 6)
     else:
         # 19/08 — si Pionex mismo no responde, no abrir a ciegas: sin
         # verificación real, es mejor abortar que arriesgar otro caso XMR.
@@ -851,8 +866,8 @@ def _abrir_grilla_automatica(r: dict, check: dict):
             # fee siempre, sea cual sea el ancho.
             resp = pionex_api.crear_grilla_futuros(
                 par=r["par"].replace("USDT", ""),
-                top=r["rango_alto"],
-                bottom=r["rango_bajo"],
+                top=rango_alto_fresco,
+                bottom=rango_bajo_fresco,
                 row=r["grillas"],
                 capital_usdt=check["inversion_real"],
                 leverage=10,  # FIJO: decisión confirmada, siempre 10x
@@ -1366,10 +1381,13 @@ def main():
         # liviano de BTC en el medio). Captura señales que antes se perdían
         # entre ciclos, sobre todo operaciones que abren y cierran rápido
         # (mediana histórica de cierre: 6-17 min en varios pares).
-        schedule.every().day.at(f"{h_utc:02d}:03").do(generar_alertas)
-        schedule.every().day.at(f"{h_utc:02d}:18").do(generar_alertas)
-        schedule.every().day.at(f"{h_utc:02d}:33").do(generar_alertas)
-        schedule.every().day.at(f"{h_utc:02d}:48").do(generar_alertas)
+        # 19/08: margen post-cierre de vela bajado de 3 a 1 minuto (pedido
+        # directo de Juanjo — /frescura_velas se había armado para medir
+        # y decidir con datos el viernes, pero se adelantó el cambio).
+        schedule.every().day.at(f"{h_utc:02d}:01").do(generar_alertas)
+        schedule.every().day.at(f"{h_utc:02d}:16").do(generar_alertas)
+        schedule.every().day.at(f"{h_utc:02d}:31").do(generar_alertas)
+        schedule.every().day.at(f"{h_utc:02d}:46").do(generar_alertas)
 
     if AUTOMATIZACION_ACTIVA:
         def _monitorear():

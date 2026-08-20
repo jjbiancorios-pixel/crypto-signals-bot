@@ -41,8 +41,20 @@ TAKE_PROFIT_PCT = 0.0135  # 1.35% — referencia INTERNA nuestra (primer checkpo
 # -15% (el techo absoluto incondicional de v17) desde la apertura misma
 # — antes no había ningún SL real hasta que nuestro bot lo cerraba a
 # mano; ahora Pionex mismo protege ese piso desde el minuto uno.
-PROFIT_STOP_CEILING_PIONEX = 0.50  # 50% — techo alto, nunca debería alcanzarse de verdad
-STOP_LOSS_INICIAL_PIONEX = -0.15  # -15%, el techo absoluto incondicional de v17
+# 19/08 (ESQUEMA SIMPLE, TEMPORAL hasta resolver el trailing) — Juanjo
+# pidió volver a TP/SL fijos nativos de Pionex (rápidos, confiables, sin
+# nuestra latencia) en vez del techo alto + trailing propio: TP fijo
+# 1.35%, SL inicial fijo -3%, y SI la ganancia llega a 0% o más en algún
+# momento, nuestro sistema vigila y cierra si retrocede a -1.5% (Pionex
+# no permite modificar el SL nativo de una posición corriendo — mismo
+# límite que ya confirmamos con el diseño anterior). Constantes viejas
+# del techo alto quedan sin uso pero no se borran, por si se retoma el
+# trailing más adelante.
+PROFIT_STOP_CEILING_PIONEX = 0.50  # sin uso mientras dure el esquema simple
+STOP_LOSS_INICIAL_PIONEX = -0.15  # sin uso mientras dure el esquema simple
+TP_FIJO_SIMPLE = 0.0135  # 1.35% — mandado directo a Pionex como profitStop
+SL_INICIAL_SIMPLE = -0.03  # -3% — mandado directo a Pionex como lossStop al crear
+SL_AJUSTADO_SIMPLE = -1.5  # -1.5% — nuestro sistema cierra a este nivel SI la ganancia tocó >=0% en algún momento
 
 
 def _firmar(method: str, path: str, query: str, body: str = "") -> tuple:
@@ -109,9 +121,9 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
         "quoteInvestment": str(capital_usdt),
         "investmentFrom": "USER",
         "profitStopType": "profit_ratio",
-        "profitStop": str(PROFIT_STOP_CEILING_PIONEX),
+        "profitStop": str(TP_FIJO_SIMPLE),
         "lossStopType": "profit_ratio",
-        "lossStop": str(STOP_LOSS_INICIAL_PIONEX),
+        "lossStop": str(SL_INICIAL_SIMPLE),
     }
     if extra_margin_usdt and extra_margin_usdt > 0:
         # Margen de origen (dinámico): reservado desde la apertura, baja el
