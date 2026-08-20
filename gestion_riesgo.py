@@ -10,6 +10,7 @@ en el proyecto.
 
 import db
 import pionex_api
+import time
 from datetime import datetime, timezone, timedelta
 
 TZ_ARG = timezone(timedelta(hours=-3))
@@ -55,7 +56,7 @@ CHECKPOINTS_PERDIDA_ACTIVOS = False
 # correspondiente — Pionex protege ese nivel con su motor rápido, no el
 # nuestro. Más allá de 1.85%, pasa a un retroceso proporcional del pico.
 RATCHET_GANANCIA = {1.35: 1.20, 1.5: 1.35, 1.6: 1.45, 1.7: 1.55, 1.85: 1.70}
-RETROCESO_GANANCIA_PCT_V17 = 0.20
+RETROCESO_GANANCIA_PCT_V17 = 0.15  # 19/08: bajado de 0.20 — con el desfasaje real detectado (caso ENA: pico 2.41%, piso calculado 1.93%, resultado real final 0.89%), un piso más cerca del pico da más colchón antes de que el desfasaje entre detectar y ejecutar se coma la ganancia
 UMBRAL_GRID_DINAMICO_PCT = 10  # v16 (modo sombra): distancia al borde del rango que "hubiera" disparado un ajuste
 BETA_REBOTE_DGT_PCT = 0.3  # v16 (modo sombra, 28/07): % de rebote/pullback confirmado que exige el paper DGT antes de ajustar — valor propio, sin dato histórico detrás todavía, a calibrar con el informe semanal
 OBJETIVO_DIARIO_PCT = 3
@@ -300,6 +301,43 @@ def _evaluar_factores_tecnicos_perdida(par: str, es_largo: bool) -> dict:
         return {"factores_cumplidos": 0, "error": str(e)}
 
 
+def _cerrar_y_obtener_resultado_real(par: str, bu_order_id: str, resultado_estimado: float,
+                                       capital_asignado: float, nota_pionex: str) -> tuple:
+    """
+    19/08 (FIX) — Caso real: ENAUSDT — el mensaje decía "cerrada en
+    +1.32%" (nuestra estimación ANTES de cerrar), pero la app de Pionex
+    mostró +0.89% como resultado real final. Los 3 cierres automáticos
+    (checkpoint, piso, techo absoluto) usaban resultado_actual — el
+    valor calculado JUSTO ANTES de mandar el cierre — como resultado
+    definitivo, sin volver a preguntarle a Pionex qué pasó DESPUÉS de
+    que la orden se ejecutó de verdad (con el tiempo que tarda Pionex en
+    procesar + el precio real de ejecución, que puede diferir del que
+    vimos al decidir cerrar).
+
+    Ahora: cierra, espera un momento a que Pionex termine de procesar, y
+    vuelve a consultar el resultado real — si lo consigue, ese es el que
+    se guarda; si no, cae de vuelta a la estimación previa (mejor que
+    nada). Devuelve (resultado_real, advertencia_o_None).
+    """
+    pionex_api.cerrar_grilla_futuros(bu_order_id, nota=nota_pionex)
+    # 19/08: se sacó el time.sleep(2) que había acá — frenaba TODO el
+    # ciclo de 5seg (bloqueaba antes de poder revisar cualquier otra
+    # posición abierta, y demoraba el inicio del próximo ciclo). Prioridad
+    # ahora es velocidad de cierre — se consulta inmediato, sin esperar.
+    try:
+        desglose_final = pionex_api.calcular_resultado_desglosado(bu_order_id, par=par, capital_total_real=capital_asignado)
+        if desglose_final and desglose_final.get("total_pct") is not None:
+            resultado_real = desglose_final["total_pct"]
+            diferencia = round(resultado_real - resultado_estimado, 2)
+            advertencia = None
+            if abs(diferencia) > 0.3:
+                advertencia = f"⚠️ {par}: la estimación previa ({resultado_estimado:+.2f}%) difería del resultado real ({resultado_real:+.2f}%) por {diferencia:+.2f} puntos — guardado el real."
+            return resultado_real, advertencia
+    except Exception:
+        pass
+    return resultado_estimado, f"⚠️ {par}: no se pudo re-confirmar el resultado real tras cerrar — se guardó la estimación previa ({resultado_estimado:+.2f}%)."
+
+
 def _procesar_checkpoint_perdida(op: dict, resultado_actual: float, bu_order_id: str):
     """
     v17 — Si resultado_actual cruzó un checkpoint de pérdida (-6/-9/-12)
@@ -335,10 +373,14 @@ def _procesar_checkpoint_perdida(op: dict, resultado_actual: float, bu_order_id:
 
         if decision == "cerrar":
             try:
-                pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"v17: checkpoint {checkpoint}%, {factores}/4 factores")
-                db.cerrar_senal_automatica(senal_id, resultado_actual, motivo=f"checkpoint_{checkpoint}")
-                return (f"🛑 {par}: cerrada en checkpoint {checkpoint}% ({resultado_actual:+.2f}% real) — "
-                        f"solo {factores}/4 factores técnicos a favor de mantener.")
+                resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
+                    par, bu_order_id, resultado_actual, op.get("capital_asignado"),
+                    nota_pionex=f"v17: checkpoint {checkpoint}%, {factores}/4 factores"
+                )
+                db.cerrar_senal_automatica(senal_id, resultado_real, motivo=f"checkpoint_{checkpoint}")
+                mensaje = (f"🛑 {par}: cerrada en checkpoint {checkpoint}% ({resultado_real:+.2f}% real) — "
+                           f"solo {factores}/4 factores técnicos a favor de mantener.")
+                return mensaje + (f"\n{advertencia}" if advertencia else "")
             except Exception as e:
                 return f"⚠️ {par}: quiso cerrar en checkpoint {checkpoint}% pero falló ({e}) — REVISAR."
         else:
@@ -390,11 +432,15 @@ def _procesar_piso_ganancia(op: dict, resultado_actual: float, pico_actual: floa
 
     if resultado_actual <= piso:
         try:
-            pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"v17: piso ascendente, pico {pico_actual:+.2f}%, piso {piso:+.2f}%")
-            db.cerrar_senal_automatica(senal_id, resultado_actual, motivo="piso_ganancia")
-            db.guardar_checkpoint_v17(senal_id, par, "ganancia", pico_actual, resultado_actual,
+            resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
+                par, bu_order_id, resultado_actual, op.get("capital_asignado"),
+                nota_pionex=f"v17: piso ascendente, pico {pico_actual:+.2f}%, piso {piso:+.2f}%"
+            )
+            db.cerrar_senal_automatica(senal_id, resultado_real, motivo="piso_ganancia")
+            db.guardar_checkpoint_v17(senal_id, par, "ganancia", pico_actual, resultado_real,
                                        decision=f"cerrada en piso {piso} (pico {pico_actual})")
-            return f"📈 {par}: PISO ejecutado — pico {pico_actual:+.2f}%, cerrada en {resultado_actual:+.2f}% (piso {piso:+.2f}%)."
+            mensaje = f"📈 {par}: PISO ejecutado — pico {pico_actual:+.2f}%, cerrada en {resultado_real:+.2f}% (piso {piso:+.2f}%)."
+            return mensaje + (f"\n{advertencia}" if advertencia else "")
         except Exception as e:
             return f"⚠️ {par}: tocó el piso ({piso:+.2f}%) pero falló el cierre real ({e}) — REVISAR YA."
     return None
@@ -617,12 +663,16 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         # slippage extremo, etc.), no el mecanismo principal.
         if resultado_actual_sl is not None and resultado_actual_sl <= STOP_LOSS_PCT:
             try:
-                pionex_api.cerrar_grilla_futuros(bu_order_id, nota=f"Red de seguridad v17: {STOP_LOSS_PCT}%")
-                db.cerrar_senal_automatica(senal_id, resultado_actual_sl, motivo="techo_absoluto_v17")
-                acciones.append(
-                    f"🛑 {par}: TECHO ABSOLUTO ejecutado a {resultado_actual_sl:+.2f}% "
+                resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
+                    par, bu_order_id, resultado_actual_sl, op.get("capital_asignado"),
+                    nota_pionex=f"Red de seguridad v17: {STOP_LOSS_PCT}%"
+                )
+                db.cerrar_senal_automatica(senal_id, resultado_real, motivo="techo_absoluto_v17")
+                mensaje = (
+                    f"🛑 {par}: TECHO ABSOLUTO ejecutado a {resultado_real:+.2f}% "
                     f"(umbral {STOP_LOSS_PCT}%) — el SL nativo de Pionex debería haber actuado antes, REVISAR por qué no lo hizo."
                 )
+                acciones.append(mensaje + (f"\n{advertencia}" if advertencia else ""))
                 continue
             except Exception as e:
                 acciones.append(
