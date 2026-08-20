@@ -22,6 +22,15 @@ import json
 import requests
 
 PIONEX_BASE_URL = "https://api.pionex.com"
+# 20/08 — comisión de cierre (taker, futuros: 0.05% confirmado en varias
+# fuentes públicas — Pionex no publica una API de fees, no hay endpoint
+# propio para confirmarlo). Caso real: XLMUSDT — nuestro cálculo daba
+# -2.14%, el resultado real en Pionex fue -2.39% (0.25 puntos de
+# diferencia) — no_realizado_usd nunca restaba la comisión del cierre,
+# que con 10x de apalancamiento se amplifica al expresarla como % del
+# margen. Se resta como estimación — no confirmado al centavo, revisar
+# si sigue habiendo diferencia sistemática con más casos reales.
+COMISION_CIERRE_TAKER_PCT = 0.0005
 PIONEX_API_KEY = os.environ.get("PIONEX_API_KEY", "")
 PIONEX_API_SECRET = os.environ.get("PIONEX_API_SECRET", "")
 
@@ -52,9 +61,11 @@ TAKE_PROFIT_PCT = 0.0135  # 1.35% — referencia INTERNA nuestra (primer checkpo
 # trailing más adelante.
 PROFIT_STOP_CEILING_PIONEX = 0.50  # sin uso mientras dure el esquema simple
 STOP_LOSS_INICIAL_PIONEX = -0.15  # sin uso mientras dure el esquema simple
-TP_FIJO_SIMPLE = 0.0135  # 1.35% — mandado directo a Pionex como profitStop
-SL_INICIAL_SIMPLE = -0.03  # -3% — mandado directo a Pionex como lossStop al crear
-SL_AJUSTADO_SIMPLE = -1.5  # -1.5% — nuestro sistema cierra a este nivel SI la ganancia tocó >=0% en algún momento
+TP_FIJO_SIMPLE = 0.15  # 20/08: subido de 1.35% a 15% — techo alto nativo, el cierre real por ganancia ahora lo maneja nuestro trailing (ver UMBRAL_TRAILING_SIMPLE/RETROCESO_ABSOLUTO_TRAILING)
+SL_INICIAL_SIMPLE = -0.05  # 20/08: -5% (era -3%) — mandado directo a Pionex como lossStop al crear
+SL_AJUSTADO_SIMPLE = -2.5  # 20/08: -2.5% (era -1.5%) — nuestro sistema cierra a este nivel SI la ganancia tocó >=0% en algún momento, MIENTRAS no haya llegado todavía a UMBRAL_TRAILING_SIMPLE
+UMBRAL_TRAILING_SIMPLE = 1.35  # 20/08 — a partir de acá, el esquema simple pasa a vigilar el RETROCESO_ABSOLUTO_TRAILING desde el pico, no el SL_AJUSTADO_SIMPLE
+RETROCESO_ABSOLUTO_TRAILING = 1.0  # 20/08 — una vez que tocó UMBRAL_TRAILING_SIMPLE, cierra si retrocede más de 1 punto porcentual DESDE EL PICO (no un % proporcional, un punto fijo)
 
 
 def _firmar(method: str, path: str, query: str, body: str = "") -> tuple:
@@ -340,7 +351,11 @@ def calcular_zona_riesgo_combinada(bu_order_id: str, capital_asignado: float,
     except Exception:
         r_margen = {"zona": "desconocida"}
 
-    precio_actual = obtener_precio_mercado(par)
+    # 20/08 — usa el precio DIRECTO de Pionex (antes usaba la cascada
+    # externa) — por consistencia con la recomendación del documento de
+    # trailing: cualquier decisión basada en precio debería usar la
+    # fuente más directa posible, no solo el camino del trailing.
+    precio_actual = obtener_precio_pionex_directo(par)
     if precio_actual:
         try:
             r_distancia = calcular_zona_riesgo(bu_order_id, precio_actual)
@@ -595,9 +610,9 @@ def calcular_resultado_actual(bu_order_id: str, par: str = None, capital_total_r
             if precio_actual is not None:
                 es_corto = bod.get("trend") == "short"
                 if es_corto:
-                    no_realizado_usd = abs(base_amount) * (position_open_price - precio_actual)
+                    no_realizado_usd = abs(base_amount) * (position_open_price - precio_actual) - abs(base_amount) * precio_actual * COMISION_CIERRE_TAKER_PCT
                 else:
-                    no_realizado_usd = abs(base_amount) * (precio_actual - position_open_price)
+                    no_realizado_usd = abs(base_amount) * (precio_actual - position_open_price) - abs(base_amount) * precio_actual * COMISION_CIERRE_TAKER_PCT
 
         return round(((margin_balance - init_investment) + no_realizado_usd) / quote_investment * 100, 4)
     except (ValueError, TypeError):
@@ -644,9 +659,9 @@ def calcular_resultado_desglosado(bu_order_id: str, par: str = None, capital_tot
             if precio_actual is not None:
                 es_corto = bod.get("trend") == "short"
                 if es_corto:
-                    no_realizado_usd = abs(base_amount) * (position_open_price - precio_actual)
+                    no_realizado_usd = abs(base_amount) * (position_open_price - precio_actual) - abs(base_amount) * precio_actual * COMISION_CIERRE_TAKER_PCT
                 else:
-                    no_realizado_usd = abs(base_amount) * (precio_actual - position_open_price)
+                    no_realizado_usd = abs(base_amount) * (precio_actual - position_open_price) - abs(base_amount) * precio_actual * COMISION_CIERRE_TAKER_PCT
 
         total_pct = round(((margin_balance - init_investment) + no_realizado_usd) / quote_investment * 100, 4)
         grid_profit_usd = float(bod.get("gridProfit", 0) or 0)

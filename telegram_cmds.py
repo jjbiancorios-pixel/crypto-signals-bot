@@ -1096,6 +1096,23 @@ def _cmd_comparar_precio(args: list) -> str:
     return "\n".join(lineas)
 
 
+def _cmd_deriva_entrada() -> str:
+    """
+    20/08 — Resumen para el informe del domingo: cuántas señales se
+    bloquean por el chequeo de deriva de precio (±1% entre análisis y
+    apertura) vs. cuántas pasan, con la distribución real medida.
+    """
+    r = db.resumen_deriva_entrada()
+    if r.get("total", 0) == 0:
+        return "📊 Deriva de entrada: sin datos todavía."
+
+    b, p = r["bloqueadas"], r["pasaron"]
+    lineas = [f"📊 <b>Deriva de precio al abrir</b> (total {r['total']} señales medidas)\n"]
+    lineas.append(f"⛔ Bloqueadas: {b['n']} ({b['pct_del_total']}%) | deriva prom {b['deriva_prom_pct']}% | máxima {b['deriva_max_pct']}%")
+    lineas.append(f"✅ Pasaron: {p['n']} ({p['pct_del_total']}%) | deriva prom {p['deriva_prom_pct']}%")
+    return "\n".join(lineas)
+
+
 def _cmd_estado_piso(args: list) -> str:
     """
     19/08 — Diagnóstico directo: muestra el estado REAL que nuestro
@@ -1342,6 +1359,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_probar_pionex(args)
     elif cmd == "/comparar_precio":
         return _cmd_comparar_precio(args)
+    elif cmd == "/deriva_entrada":
+        return _cmd_deriva_entrada()
     elif cmd == "/estado_piso":
         return _cmd_estado_piso(args)
     elif cmd == "/senales_fantasma":
@@ -1461,6 +1480,9 @@ def procesar_comando(texto: str) -> str:
             "/comparar_precio PAR\n"
             "  🔍 Compara Bybit/OKX/Binance para un par, sin cascada —\n"
             "  para investigar precios sospechosos. Ej: /comparar_precio XMR\n\n"
+            "/deriva_entrada\n"
+            "  📊 Cuántas señales se bloquean por deriva de precio (±1%)\n"
+            "  vs. cuántas pasan — informe del domingo 24/08.\n\n"
             "/estado_piso PAR\n"
             "  🔍 Estado real del piso ascendente para un par — MFE\n"
             "  trackeado, piso ya fijado, bu_order_id. Ej: /estado_piso ACE\n\n"

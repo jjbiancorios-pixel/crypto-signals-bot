@@ -820,6 +820,52 @@ def _abrir_grilla_automatica(r: dict, check: dict):
         precio_real_actual = pionex_api.obtener_precio_pionex_directo(r["par"])
     except Exception:
         precio_real_actual = None
+
+    # 20/08 (pedido de Juanjo) — chequeo de CERTEZA de entrada: compara el
+    # precio fresco contra el precio del ANÁLISIS original (no contra el
+    # rango, que ya se recalcula aparte) — si se movió más de 1% desde
+    # que se armó la señal, se descarta la apertura directamente, en vez
+    # de abrir igual con el rango recentrado. Motivo: el rango recentrado
+    # mantiene la grilla sana mecánicamente, pero si el precio ya se movió
+    # mucho, la tesis técnica original (RSI/MACD/etc.) puede haber
+    # quedado desactualizada igual. Umbral 1%, no 2% — ya sabemos que la
+    # sola comisión de cierre come ~0.5% (caso real XLM), dejando poco
+    # margen para además tolerar mucha deriva de precio y seguir
+    # cumpliendo el objetivo de no arrancar peor de -1%.
+    UMBRAL_DERIVA_ENTRADA_PCT = 1.0
+    if precio_real_actual is not None and r.get("precio"):
+        deriva_pct = abs(precio_real_actual - r["precio"]) / r["precio"] * 100
+        bloqueado = deriva_pct > UMBRAL_DERIVA_ENTRADA_PCT
+        # 20/08 — registro para el informe del domingo (pedido de
+        # Juanjo): guarda CADA caso que pasa por acá, bloquee o no, para
+        # medir con datos reales qué proporción de señales quedan afuera.
+        try:
+            db.guardar_deriva_entrada(r["par"], r.get("direccion"), r["precio"], precio_real_actual, deriva_pct, bloqueado)
+        except Exception as e:
+            print(f"⚠️ No se pudo guardar el registro de deriva de entrada: {e}")
+        if bloqueado:
+            return None, (
+                f"⛔ DESCARTADA — el precio se movió {deriva_pct:.2f}% desde el análisis "
+                f"({r['precio']} → {precio_real_actual}), por encima del {UMBRAL_DERIVA_ENTRADA_PCT}% "
+                f"aceptado. La señal pudo haber quedado desactualizada. NO se abrió la grilla."
+            )
+
+    # 17/08 (FIX DE SEGURIDAD): caso real XMRUSDT — el precio usado para
+    # calcular el rango vino mal por una causa que no se pudo confirmar
+    # (la hipótesis inicial de que XMR estaba delistado de Binance/OKX
+    # resultó ser FALSA, Juanjo lo confirmó viendo el par listado en vivo
+    # — no repetir esa explicación).
+    #
+    # 19/08 (FIX REAL): el mismo bug volvió a pasar CON esta verificación
+    # ya activa — se descubrió por qué no lo atrapaba: usaba
+    # obtener_precio_mercado(), que consulta la MISMA cascada externa
+    # Bybit/OKX/Binance que calculó el rango original. Si esa cascada
+    # tiene un problema de datos persistente para un par (como XMR),
+    # ambas consultas devuelven el MISMO valor malo — comparando algo
+    # mal contra sí mismo, nunca hay discrepancia. Corregido: ahora
+    # compara contra obtener_precio_pionex_directo() — el precio de
+    # PIONEX MISMO (su propio motor de trading, vía endpoint público),
+    # totalmente independiente de la cascada externa.
     if precio_real_actual is not None:
         margen_tolerancia = (r["rango_alto"] - r["rango_bajo"])  # mismo ancho del rango, de colchón extra a cada lado
         piso_aceptable = r["rango_bajo"] - margen_tolerancia
@@ -883,6 +929,25 @@ def _abrir_grilla_automatica(r: dict, check: dict):
                     f"USD {check['capital_operacion']:.2f} total)"
                     + (f" — tras {intento} intentos" if intento > 1 else "")
                 )
+                # 20/08 (punto 1, pedido de Juanjo) — verificación
+                # post-apertura: consulta el resultado real apenas se
+                # confirma la orden, para medir con datos reales cuánto
+                # se pierde de entrada (comisión de apertura + spread +
+                # cualquier desfasaje residual) — puramente informativo,
+                # no cambia ninguna decisión, da visibilidad para seguir
+                # optimizando la certeza de entrada.
+                try:
+                    desglose_inicial = pionex_api.calcular_resultado_desglosado(
+                        bu_order_id, par=r["par"], capital_total_real=check["capital_operacion"]
+                    )
+                    if desglose_inicial and desglose_inicial.get("total_pct") is not None:
+                        resultado_inicial = desglose_inicial["total_pct"]
+                        if resultado_inicial < -1.0:
+                            mensaje += f"\n⚠️ Precisión de entrada: ya arrancó en {resultado_inicial:+.2f}% (por debajo del -1% buscado) — revisar."
+                        else:
+                            mensaje += f"\n📍 Precisión de entrada: {resultado_inicial:+.2f}% al confirmar."
+                except Exception:
+                    pass
                 return bu_order_id, mensaje
 
             codigo_error = resp.get("code", "")

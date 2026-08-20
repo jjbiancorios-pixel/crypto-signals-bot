@@ -56,6 +56,30 @@ def _migrar_columnas_riesgo(cur):
             pass  # ya existe
 
 
+def _crear_tabla_deriva_entrada(cur):
+    """
+    20/08 — Registra CADA vez que una señal llega al chequeo de deriva de
+    precio (análisis vs. precio fresco de Pionex al momento de abrir),
+    bloquee o no — para medir con datos reales (no estimación) cuántas
+    señales quedan afuera por el bloqueo de ±1% (pedido de Juanjo,
+    informe para el domingo 24/08).
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS deriva_entrada_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            par TEXT NOT NULL,
+            direccion TEXT,
+            precio_analisis REAL NOT NULL,
+            precio_fresco REAL NOT NULL,
+            deriva_pct REAL NOT NULL,
+            bloqueado INTEGER NOT NULL,
+            fecha TEXT NOT NULL,
+            hora TEXT NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+
+
 def _crear_tabla_frescura_velas(cur):
     """
     18/08 — Mide cuántos minutos tiene la última vela de 15m al momento
@@ -478,6 +502,7 @@ def init_db():
     _crear_tabla_score_completo(cur)
     _crear_tabla_experimento_btc_lateral(cur)
     _crear_tabla_frescura_velas(cur)
+    _crear_tabla_deriva_entrada(cur)
     _corregir_registrado_pionex_automaticas(cur)
 
     conn.commit()
@@ -2968,3 +2993,52 @@ def limpiar_senales_fantasma() -> int:
     for f in fantasmas:
         cerrar_senal_automatica(f["id"], 0, motivo="fantasma_limpiada_19_08")
     return len(fantasmas)
+
+
+def guardar_deriva_entrada(par: str, direccion: str, precio_analisis: float,
+                            precio_fresco: float, deriva_pct: float, bloqueado: bool):
+    """20/08 — guarda una medición de deriva de precio al momento de abrir (bloqueada o no)."""
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        INSERT INTO deriva_entrada_log
+            (par, direccion, precio_analisis, precio_fresco, deriva_pct, bloqueado, fecha, hora, creado)
+        VALUES (?,?,?,?,?,?,?,?,?)
+    """, (par, direccion, precio_analisis, precio_fresco, deriva_pct, int(bloqueado),
+          ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), ahora.isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def resumen_deriva_entrada() -> dict:
+    """
+    20/08 — Resumen para el informe del domingo: cuántas señales se
+    bloquearon por deriva de precio vs. cuántas pasaron, y la
+    distribución real de cuánto se movió el precio en cada caso.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT par, direccion, deriva_pct, bloqueado FROM deriva_entrada_log")
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"total": 0}
+
+    bloqueadas = [f for f in filas if f["bloqueado"] == 1]
+    pasaron = [f for f in filas if f["bloqueado"] == 0]
+
+    return {
+        "total": len(filas),
+        "bloqueadas": {
+            "n": len(bloqueadas),
+            "pct_del_total": round(len(bloqueadas) / len(filas) * 100, 1),
+            "deriva_prom_pct": round(sum(f["deriva_pct"] for f in bloqueadas) / len(bloqueadas), 3) if bloqueadas else None,
+            "deriva_max_pct": round(max((f["deriva_pct"] for f in bloqueadas), default=0), 3),
+        },
+        "pasaron": {
+            "n": len(pasaron),
+            "pct_del_total": round(len(pasaron) / len(filas) * 100, 1),
+            "deriva_prom_pct": round(sum(f["deriva_pct"] for f in pasaron) / len(pasaron), 3) if pasaron else None,
+        },
+    }

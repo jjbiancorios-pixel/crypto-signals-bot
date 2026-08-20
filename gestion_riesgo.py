@@ -26,16 +26,16 @@ CAPITAL_TOTAL_USD = 782  # 28/07: actualizado con el capital real post-pérdidas
 # impida ejecutar el stop-loss a tiempo) se cubre ahora con el margen de
 # origen más chico (10%, ver RATIO_MARGEN_ORIGEN), no con una reserva aparte.
 PCT_OPERATIVO = 1.0  # v16: sin reserva aparte — el tope real de todos modos lo pone MAX_POSICIONES_SIMULTANEAS x PCT_CAPITAL_POR_OPERACION
-PCT_CAPITAL_POR_OPERACION = 0.425  # 01/08: 35% -> 42.5% (Juanjo, punto medio entre 35% y 50% que se discutieron). Con interés compuesto diario, esto es el valor de RESPALDO si todavía no corrió el recálculo de las 00:01 — el tamaño real del día lo fija db.capital_diario.tamano_objetivo
+PCT_CAPITAL_POR_OPERACION = 0.10  # 20/08: bajado de 42.5% a 10% (Juanjo) — MIENTRAS SE ESTÁ PROBANDO el funcionamiento del esquema simple/trailing rediseñado, no para operar a pleno todavía. Con interés compuesto diario, esto es el valor de RESPALDO si todavía no corrió el recálculo de las 00:01 — el tamaño real del día lo fija db.capital_diario.tamano_objetivo
 RESERVA_RECUPERO_PCT = 0.15  # 01/08: % del capital del día que se reserva para completar el tamaño objetivo si el día viene en pérdida (no es margen ni reserva "inmóvil" — se usa para ABRIR, no para reforzar)
-MAX_POSICIONES_SIMULTANEAS = 2  # v16: tope duro nuevo — antes no existía (~14 con el esquema 6%)
+MAX_POSICIONES_SIMULTANEAS = 4  # 20/08: 3->4 (Juanjo, ajuste sobre la marcha) — junto con capital al 10%, mientras se prueba el esquema simple/trailing
 # v16: recalibrado 6 -> 1. El 6 (de la actualización 20-21/07) quedaba
 # matemáticamente imposible de alcanzar con el tope nuevo de 2 posiciones
 # simultáneas (nunca puede haber 6 atascadas si el máximo son 2). Se
 # recalibra manteniendo la misma proporción aproximada del diseño original
 # (6 de ~14 posiciones ≈ 43% -> redondea a 1 de 2).
 MAX_ATASCADAS_RIESGO = 1
-MAX_APERTURAS_POR_CICLO = 2  # 12/08: subido de 1 a 2 (Juanjo) — igual al tope de posiciones simultáneas, para no perder una 2da señal buena cuando hay capital libre y aparecen 2 el mismo ciclo
+MAX_APERTURAS_POR_CICLO = 3  # 20/08: subido de 2 a 3 (Juanjo) — queda en 3 aunque el tope de simultáneas subió a 4
 STOP_LOSS_PCT = -15  # v17: techo absoluto INCONDICIONAL — antes -20%, reemplazado por el esquema de checkpoints. Este chequeo queda como RED DE SEGURIDAD (el cierre real de -15% lo protege el SL nativo de Pionex, mucho más rápido que nuestro monitoreo de 1 min — esto es un backup por si esa protección fallara).
 # v17 — Checkpoints de pérdida CON análisis técnico (no solo magnitud):
 # en -6/-9/-12%, se evalúan 4 factores; si se cumplen 3 de 4, se mantiene
@@ -506,7 +506,27 @@ def chequeo_rapido_ganancia_v17() -> list:
             if mejor is None or resultado_actual > mejor:
                 db.actualizar_mejor_resultado(op["id"], resultado_actual)
                 mejor = max(resultado_actual, mejor) if mejor is not None else resultado_actual
-            if mejor is not None and mejor >= 0 and resultado_actual <= pionex_api.SL_AJUSTADO_SIMPLE:
+
+            # 20/08 — dos regímenes distintos según qué tan lejos llegó:
+            # (1) ya tocó UMBRAL_TRAILING_SIMPLE (1.35%) en algún momento
+            #     -> vigila el PICO, cierra si retrocede más de 1 punto
+            #     porcentual FIJO desde ahí (no proporcional).
+            # (2) todavía no llegó a 1.35% pero sí tocó breakeven (>=0%)
+            #     -> usa el SL_AJUSTADO_SIMPLE de siempre (-2.5%).
+            if mejor is not None and mejor >= pionex_api.UMBRAL_TRAILING_SIMPLE:
+                retroceso_desde_pico = mejor - resultado_actual
+                if retroceso_desde_pico > pionex_api.RETROCESO_ABSOLUTO_TRAILING:
+                    try:
+                        resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
+                            par, bu_order_id, resultado_actual, op.get("capital_asignado"),
+                            nota_pionex=f"esquema simple: trailing — pico {mejor:+.2f}%, retrocedió {retroceso_desde_pico:.2f}pts"
+                        )
+                        db.cerrar_senal_automatica(op["id"], resultado_real, motivo="trailing_punto_fijo")
+                        mensaje = f"📈 {par}: TRAILING ejecutado — pico {mejor:+.2f}%, retrocedió {retroceso_desde_pico:.2f}pts, cerrada en {resultado_real:+.2f}%."
+                        acciones.append(mensaje + (f"\n{advertencia}" if advertencia else ""))
+                    except Exception as e:
+                        acciones.append(f"⚠️ {par}: tocó el trailing pero falló el cierre real ({e}) — REVISAR YA.")
+            elif mejor is not None and mejor >= 0 and resultado_actual <= pionex_api.SL_AJUSTADO_SIMPLE:
                 try:
                     resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
                         par, bu_order_id, resultado_actual, op.get("capital_asignado"),
