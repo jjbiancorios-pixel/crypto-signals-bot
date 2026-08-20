@@ -1060,10 +1060,10 @@ def _cmd_probar_pionex(args: list) -> str:
 
 def _cmd_comparar_precio(args: list) -> str:
     """
-    19/08 — Consulta las 3 fuentes de precio (Bybit/OKX/Binance) para un
-    par, SIN cascada (todas, no la primera que responde) — para
-    investigar con evidencia real casos como XMR (venía dando ~118 vía
-    Binance, muy lejos del precio real ~416, sin causa confirmada).
+    19/08 — Consulta las 3 fuentes de la cascada externa (Bybit/OKX/
+    Binance) MÁS el precio directo de Pionex, y avisa si alguna
+    difiere significativamente de Pionex — la referencia real, ya que
+    es contra ESE precio que se valida el rango antes de abrir.
     Uso: /comparar_precio PAR
     """
     if not args:
@@ -1077,6 +1077,22 @@ def _cmd_comparar_precio(args: list) -> str:
     lineas = [f"🔍 <b>Comparación de fuentes — {par}</b>\n"]
     for fuente, valor in resultado.items():
         lineas.append(f"{fuente}: {valor}")
+
+    pionex_val = resultado.get("pionex_directo")
+    if isinstance(pionex_val, (int, float)) and pionex_val > 0:
+        lineas.append("")
+        hubo_discrepancia = False
+        for fuente, valor in resultado.items():
+            if fuente == "pionex_directo" or not isinstance(valor, (int, float)):
+                continue
+            diferencia_pct = abs(valor - pionex_val) / pionex_val * 100
+            if diferencia_pct > 2:
+                lineas.append(f"⚠️ {fuente} difiere {diferencia_pct:.1f}% de Pionex — SOSPECHOSO.")
+                hubo_discrepancia = True
+        if not hubo_discrepancia:
+            lineas.append("✅ Todas las fuentes están razonablemente cerca del precio real de Pionex.")
+    else:
+        lineas.append("\n⚠️ No se pudo confirmar el precio directo de Pionex — sin referencia real para comparar.")
     return "\n".join(lineas)
 
 

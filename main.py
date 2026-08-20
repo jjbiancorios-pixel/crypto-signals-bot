@@ -230,10 +230,12 @@ def get_precio(par, verbose=False):
 
 def comparar_fuentes_precio(par: str) -> dict:
     """
-    19/08 — Diagnóstico: consulta las 3 fuentes SIN cascada (todas, no
-    para en la primera que responde) — para investigar con evidencia
-    real casos como XMR (venía dando ~118 vía Binance, muy lejos del
-    precio real ~416, sin causa confirmada todavía).
+    19/08 — Diagnóstico: consulta las 3 fuentes de la cascada externa
+    SIN cascada (todas, no para en la primera que responde) MÁS el
+    precio DIRECTO de Pionex — la referencia real que importa, ya que
+    es contra ESE precio que se valida el rango antes de abrir. Permite
+    ver de un vistazo si el problema es nuestra cascada externa (alguna
+    da un valor raro comparada con Pionex) o algo más general.
     """
     resultado = {}
     for f in (_precio_bybit, _precio_okx, _precio_binance):
@@ -242,6 +244,10 @@ def comparar_fuentes_precio(par: str) -> dict:
             resultado[nombre] = f(par)
         except Exception as e:
             resultado[nombre] = f"ERROR: {e}"
+    try:
+        resultado["pionex_directo"] = pionex_api.obtener_precio_pionex_directo(par)
+    except Exception as e:
+        resultado["pionex_directo"] = f"ERROR: {e}"
     return resultado
 
 
@@ -540,7 +546,17 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     if btc["estado"]=="EN_MOVIMIENTO" and not forzar_corto and not forzar_largo:
         df15c=get_velas(par,"15m",20)
         if df15c is None: return None
-        if not correlacion_propia(df15c,btc["mov_pct"])["diverge_fuerte"]: return None
+        corr_temprana = correlacion_propia(df15c,btc["mov_pct"])
+        if not corr_temprana["diverge_fuerte"]: return None
+        # 19/08 — pedido explícito de Juanjo tras pérdidas del 25% en un
+        # día: cuando BTC tiene tendencia fuerte, NO ir en la dirección
+        # CONTRARIA a BTC, aunque la moneda diverja fuerte en ese sentido
+        # opuesto (antes solo exigía divergencia en magnitud, sin
+        # importar si era a favor o en contra del rumbo de BTC).
+        va_contra_btc = (btc["mov_pct"] > 0 and corr_temprana["mov_propio"] < 0) or \
+                        (btc["mov_pct"] < 0 and corr_temprana["mov_propio"] > 0)
+        if va_contra_btc:
+            return None
 
     df15=get_velas(par,"15m",100); df1h=get_velas(par,"1h",100); df4h=get_velas(par,"4h",50)
     if df15 is None or len(df15)<30: return None

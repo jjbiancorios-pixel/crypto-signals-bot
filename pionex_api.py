@@ -25,6 +25,14 @@ PIONEX_BASE_URL = "https://api.pionex.com"
 PIONEX_API_KEY = os.environ.get("PIONEX_API_KEY", "")
 PIONEX_API_SECRET = os.environ.get("PIONEX_API_SECRET", "")
 
+# 19/08 — Sesión HTTP persistente (keep-alive) hacia Pionex. Antes cada
+# llamada usaba requests.get/post directo, que abre una conexión TLS
+# nueva por request — según la recomendación de trailing agregada al
+# conocimiento del proyecto, esto puede costar 100-300ms extra en el
+# momento más crítico (el cierre real del trailing). Con una sesión
+# persistente, la conexión queda "caliente" entre llamadas.
+_session = requests.Session()
+
 TAKE_PROFIT_PCT = 0.0135  # 1.35% — referencia INTERNA nuestra (primer checkpoint del piso ascendente de v17), YA NO se manda directo a Pionex
 # v17 — El TP real que le mandamos a Pionex ahora es un techo alto (nunca
 # debería alcanzarse) — el cierre real por ganancia lo maneja el piso
@@ -76,7 +84,7 @@ def obtener_precision_par(par: str) -> int:
     headers = {"PIONEX-KEY": PIONEX_API_KEY, "PIONEX-SIGNATURE": firma}
     url = f"{PIONEX_BASE_URL}{path}?{query}&timestamp={timestamp}"
     try:
-        resp = requests.get(url, headers=headers, timeout=10).json()
+        resp = _session.get(url, headers=headers, timeout=10).json()
         symbolsList = resp.get("data", {}).get("symbols", [])
         if symbolsList:
             return int(symbolsList[0].get("quotePrecision", 4))
@@ -159,7 +167,7 @@ def validar_parametros_grilla(par: str, top: float, bottom: float, row: int,
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
     return resp.json()
 
 
@@ -177,7 +185,7 @@ def consultar_orden(bu_order_id: str) -> dict:
         "PIONEX-SIGNATURE": firma,
     }
     url = f"{PIONEX_BASE_URL}{path}?{query}&timestamp={timestamp}"
-    resp = requests.get(url, headers=headers, timeout=15)
+    resp = _session.get(url, headers=headers, timeout=15)
     return resp.json()
 
 
@@ -205,7 +213,7 @@ def obtener_balance_cuenta() -> float:
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
     try:
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = _session.get(url, headers=headers, timeout=15)
         data = resp.json()
         if not data.get("result"):
             return None
@@ -251,7 +259,7 @@ def obtener_precio_pionex_directo(par: str):
     symbol = f"{base}_USDT_PERP"
     url = f"{PIONEX_BASE_URL}/api/v1/market/tickers?symbol={symbol}"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = _session.get(url, timeout=10)
         data = resp.json()
         if not data.get("result"):
             return None
@@ -529,7 +537,7 @@ def cerrar_grilla_futuros(bu_order_id: str, nota: str = "Cierre automático") ->
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
     data = resp.json()
     if not data.get("result"):
         raise RuntimeError(f"Pionex rechazó el cierre: {data}")
@@ -566,7 +574,12 @@ def calcular_resultado_actual(bu_order_id: str, par: str = None, capital_total_r
         base_amount = float(bod.get("baseAmount", 0) or 0)
         position_open_price = float(bod.get("positionOpenPrice", 0) or 0)
         if abs(base_amount) > 0 and position_open_price > 0 and par:
-            precio_actual = obtener_precio_mercado(par)
+            # 19/08 — usa el precio DIRECTO de Pionex (no la cascada
+            # externa Bybit/OKX/Binance) — según las recomendaciones de
+            # trailing agregadas al proyecto, este es el camino crítico
+            # de latencia para decidir el cierre, y depender de un
+            # exchange externo suma un salto de red innecesario.
+            precio_actual = obtener_precio_pionex_directo(par)
             if precio_actual is not None:
                 es_corto = bod.get("trend") == "short"
                 if es_corto:
@@ -610,7 +623,12 @@ def calcular_resultado_desglosado(bu_order_id: str, par: str = None, capital_tot
         base_amount = float(bod.get("baseAmount", 0) or 0)
         position_open_price = float(bod.get("positionOpenPrice", 0) or 0)
         if abs(base_amount) > 0 and position_open_price > 0 and par:
-            precio_actual = obtener_precio_mercado(par)
+            # 19/08 — usa el precio DIRECTO de Pionex (no la cascada
+            # externa Bybit/OKX/Binance) — según las recomendaciones de
+            # trailing agregadas al proyecto, este es el camino crítico
+            # de latencia para decidir el cierre, y depender de un
+            # exchange externo suma un salto de red innecesario.
+            precio_actual = obtener_precio_pionex_directo(par)
             if precio_actual is not None:
                 es_corto = bod.get("trend") == "short"
                 if es_corto:
@@ -692,7 +710,7 @@ def listar_grillas_abiertas() -> list:
     headers = {"PIONEX-KEY": PIONEX_API_KEY, "PIONEX-SIGNATURE": firma}
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
     try:
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = _session.get(url, headers=headers, timeout=15)
         data = resp.json()
         if not data.get("result"):
             print(f"⚠️ listar_grillas_abiertas: Pionex respondió result=false: {str(data)[:200]}")
@@ -738,7 +756,7 @@ def reforzar_margen(bu_order_id: str, monto_extra_usdt: float, precio_actual: fl
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
     return resp.json()
 
 
@@ -774,7 +792,7 @@ def modificar_stop_loss(bu_order_id: str, nuevo_lossstop_pct: float) -> dict:
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
     data = resp.json()
     # 19/08 (FIX CRÍTICO) — antes esto devolvía data tal cual, sin
     # chequear result. Si Pionex RECHAZABA el pedido (ej. por el nombre
@@ -817,5 +835,5 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
     return resp.json()
