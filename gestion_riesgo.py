@@ -41,6 +41,15 @@ STOP_LOSS_PCT = -15  # v17: techo absoluto INCONDICIONAL — antes -20%, reempla
 # hasta el próximo checkpoint; si 2 o menos, se cierra ahí mismo. -15% es
 # el techo absoluto, sin excepción, sin importar el análisis.
 CHECKPOINTS_PERDIDA = [-6.0, -9.0, -12.0]
+# 19/08 — Juanjo pidió desactivar los checkpoints intermedios hasta
+# confirmar que el trailing de ganancia (piso ascendente) funciona de
+# verdad — mientras el lado ganancia esté en duda, prefiere volver a la
+# filosofía original de los grid bots (dejar correr la pérdida, la
+# mayoría recupera) en vez de cortar temprano en -6/-9/-12%. Una vez
+# confirmado el trailing, la idea es AJUSTAR (no solo reactivar) — quizás
+# un SL más chico, hasta 3%. Interruptor simple para no borrar el
+# código: en False, el único piso de pérdida activo es el -15% absoluto.
+CHECKPOINTS_PERDIDA_ACTIVOS = False
 # v17 — Piso ascendente de ganancia (ratchet): una vez que el resultado
 # toca cada nivel, se sube el SL REAL de Pionex (lossStop) al piso
 # correspondiente — Pionex protege ese nivel con su motor rápido, no el
@@ -298,6 +307,8 @@ def _procesar_checkpoint_perdida(op: dict, resultado_actual: float, bu_order_id:
     técnicos (3 de 4 = mantener, 2 o menos = cerrar). El techo de -15% es
     aparte (ver el chequeo de STOP_LOSS_PCT, incondicional, sin análisis).
     """
+    if not CHECKPOINTS_PERDIDA_ACTIVOS:
+        return None  # 19/08 — desactivado a pedido de Juanjo hasta confirmar el trailing, solo -15% activo
     ya_evaluado = op.get("checkpoint_perdida_evaluado")
     par = op["par"]
     senal_id = op["id"]
