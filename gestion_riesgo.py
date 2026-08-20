@@ -328,10 +328,18 @@ def _cerrar_y_obtener_resultado_real(par: str, bu_order_id: str, resultado_estim
     nada). Devuelve (resultado_real, advertencia_o_None).
     """
     pionex_api.cerrar_grilla_futuros(bu_order_id, nota=nota_pionex)
-    # 19/08: se sacó el time.sleep(2) que había acá — frenaba TODO el
-    # ciclo de 5seg (bloqueaba antes de poder revisar cualquier otra
-    # posición abierta, y demoraba el inicio del próximo ciclo). Prioridad
-    # ahora es velocidad de cierre — se consulta inmediato, sin esperar.
+    # 20/08 — restaurada una espera CORTA (1.5seg, no los 2seg de antes)
+    # específicamente acá. Se había sacado por velocidad, pero sin ella
+    # la re-consulta llegaba tan rápido que Pionex todavía no había
+    # terminado de procesar el cierre real — devolvía casi el mismo dato
+    # de ANTES de cerrar, no el resultado final de verdad. Casos reales
+    # FILUSDT/ENAUSDT: incluso con la comisión ya restada, seguía
+    # habiendo 0.59-0.71 puntos de diferencia — la re-consulta sin
+    # espera no estaba cumpliendo su propósito. Esto NO afecta la
+    # velocidad de DETECCIÓN (el pedido de cierre ya se mandó en la
+    # línea de arriba) — solo demora el momento de anotar el resultado
+    # final, que es un evento puntual, no cada ciclo de 3seg.
+    time.sleep(1.5)
     try:
         desglose_final = pionex_api.calcular_resultado_desglosado(bu_order_id, par=par, capital_total_real=capital_asignado)
         if desglose_final and desglose_final.get("total_pct") is not None:
@@ -849,7 +857,7 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
     return {"acciones": acciones, "candidatos_reapertura": candidatos_reapertura}
 
 
-def intentar_recalculo_diario() -> str:
+def intentar_recalculo_diario(forzar: bool = False) -> str:
     """
     01/08 — Interés compuesto: se llama desde main.py, tanto en un
     schedule fijo a las 00:01 ARG como en CADA ciclo de monitoreo (por si
@@ -862,15 +870,26 @@ def intentar_recalculo_diario() -> str:
     3. La consulta de balance real a Pionex responde con éxito (si falla,
        se reintenta en el próximo ciclo — nunca se asume $0).
 
+    20/08 — parámetro forzar=True (usado por /recalcular_capital):
+    ignora el punto 1, recalcula aunque ya exista el registro de hoy.
+    Caso real: Juanjo bajó PCT_CAPITAL_POR_OPERACION de 42.5% a 10% en
+    medio del día para probar el esquema — como el registro de hoy ya
+    existía (con el 42.5% viejo), tamano_objetivo seguía en ese valor
+    aunque el código ya dijera 10%, comiéndose casi todo el capital con
+    una sola operación. Sigue exigiendo que no haya operaciones abiertas
+    (mismo motivo que el punto 2 — no recalcular a mitad de exposición).
+
     Devuelve un string para loggear/avisar por Telegram, o None si no
     correspondía hacer nada este ciclo.
     """
-    if db.obtener_capital_diario() is not None:
+    if not forzar and db.obtener_capital_diario() is not None:
         return None  # ya se calculó hoy
 
     posiciones_abiertas = len(db.operaciones_abiertas_con_bu_order())
     if posiciones_abiertas > 0:
-        return None  # pospuesto — se reintenta solo en el próximo ciclo
+        if forzar:
+            return "⚠️ Recálculo de capital: hay posiciones abiertas ahora mismo, no se puede recalcular con seguridad. Cerralas o esperá a que cierren."
+        return None  # flujo normal (00:01): pospuesto en silencio, se reintenta solo en el próximo ciclo
 
     capital_real = pionex_api.obtener_balance_cuenta()
     if capital_real is None:
@@ -881,7 +900,7 @@ def intentar_recalculo_diario() -> str:
     db.guardar_capital_diario(capital_real, tamano_objetivo, reserva_inicial)
 
     return (
-        f"💰 <b>Interés compuesto — nuevo día</b>\n"
+        f"💰 <b>{'Recálculo forzado' if forzar else 'Interés compuesto — nuevo día'}</b>\n"
         f"Capital real: USD {capital_real:.2f}\n"
         f"Tamaño por operación hoy: USD {tamano_objetivo:.2f} ({PCT_CAPITAL_POR_OPERACION*100:.1f}%)\n"
         f"Reserva de recupero: USD {reserva_inicial:.2f} ({RESERVA_RECUPERO_PCT*100:.0f}%)"

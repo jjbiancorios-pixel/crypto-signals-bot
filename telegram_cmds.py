@@ -1113,6 +1113,22 @@ def _cmd_deriva_entrada() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_recalcular_capital() -> str:
+    """
+    20/08 — Fuerza el recálculo del tamaño de operación del día ya
+    mismo, con el % vigente ahora (PCT_CAPITAL_POR_OPERACION), sin
+    esperar a las 00:01. Caso real: Juanjo bajó el capital de 42.5% a
+    10% en medio del día para probar el esquema simple — como el
+    registro de hoy ya existía con el 42.5% viejo, una sola operación
+    se comía casi todo el capital disponible, bloqueando el resto.
+    Exige que no haya posiciones abiertas (mismo motivo que el
+    recálculo normal de medianoche).
+    """
+    import gestion_riesgo
+    resultado = gestion_riesgo.intentar_recalculo_diario(forzar=True)
+    return resultado or "⚠️ No se pudo recalcular — revisar logs."
+
+
 def _cmd_estado_piso(args: list) -> str:
     """
     19/08 — Diagnóstico directo: muestra el estado REAL que nuestro
@@ -1361,6 +1377,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_comparar_precio(args)
     elif cmd == "/deriva_entrada":
         return _cmd_deriva_entrada()
+    elif cmd == "/recalcular_capital":
+        return _cmd_recalcular_capital()
     elif cmd == "/estado_piso":
         return _cmd_estado_piso(args)
     elif cmd == "/senales_fantasma":
@@ -1486,6 +1504,9 @@ def procesar_comando(texto: str) -> str:
             "/estado_piso PAR\n"
             "  🔍 Estado real del piso ascendente para un par — MFE\n"
             "  trackeado, piso ya fijado, bu_order_id. Ej: /estado_piso ACE\n\n"
+            "/recalcular_capital\n"
+            "  💰 Fuerza el recálculo del tamaño de operación con el %\n"
+            "  vigente AHORA, sin esperar a las 00:01. Exige 0 posiciones abiertas.\n\n"
             "/senales_fantasma\n"
             "  👻 Lista señales que bloquean su par de por vida (bug del\n"
             "  19/08, corregido para casos nuevos, esto limpia las viejas).\n\n"
