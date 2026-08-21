@@ -65,7 +65,7 @@ TP_FIJO_SIMPLE = 0.15  # 20/08: subido de 1.35% a 15% — techo alto nativo, el 
 SL_INICIAL_SIMPLE = -0.05  # 20/08: -5% (era -3%) — mandado directo a Pionex como lossStop al crear
 SL_AJUSTADO_SIMPLE = -2.5  # 20/08: -2.5% (era -1.5%) — nuestro sistema cierra a este nivel SI la ganancia tocó >=0% en algún momento, MIENTRAS no haya llegado todavía a UMBRAL_TRAILING_SIMPLE
 UMBRAL_TRAILING_SIMPLE = 1.35  # 20/08 — a partir de acá, el esquema simple pasa a vigilar el RETROCESO_ABSOLUTO_TRAILING desde el pico, no el SL_AJUSTADO_SIMPLE
-RETROCESO_ABSOLUTO_TRAILING = 1.0  # 20/08 — una vez que tocó UMBRAL_TRAILING_SIMPLE, cierra si retrocede más de 1 punto porcentual DESDE EL PICO (no un % proporcional, un punto fijo)
+RETROCESO_ABSOLUTO_TRAILING = 0.5  # 20/08: bajado de 1.0 a 0.5 (Juanjo, punto E) — casos reales mostraron retrocesos de hasta 2.42pts con el umbral en 1.0 (detección + ejecución llegaban tarde), compensando con un umbral más chico mientras se evalúa si hace falta migrar a WebSocket (ver F en agenda)
 
 
 def _firmar(method: str, path: str, query: str, body: str = "") -> tuple:

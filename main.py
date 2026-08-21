@@ -1599,7 +1599,7 @@ def main():
                 enviar_telegram(accion)
         except Exception as e:
             print(f"Error en chequeo rápido de ganancia v17: {e}")
-    schedule.every(3).seconds.do(_chequeo_rapido_ganancia_v17)
+    schedule.every(2).seconds.do(_chequeo_rapido_ganancia_v17)
 
     if en_horario_operativo():
         generar_alertas()
@@ -1615,7 +1615,7 @@ def main():
         # un job de 15s terminaba corriendo a la misma cadencia que todo
         # lo demás. Ahora duerme 10s — liviano, no debería afectar nada
         # más (de paso, Telegram también se revisa más seguido).
-        time.sleep(2)
+        time.sleep(1.5)
 
 if __name__=="__main__":
     main()
