@@ -28,7 +28,7 @@ CAPITAL_TOTAL_USD = 782  # 28/07: actualizado con el capital real post-pérdidas
 PCT_OPERATIVO = 1.0  # v16: sin reserva aparte — el tope real de todos modos lo pone MAX_POSICIONES_SIMULTANEAS x PCT_CAPITAL_POR_OPERACION
 PCT_CAPITAL_POR_OPERACION = 0.05  # 20/08: bajado de 10% a 5% (Juanjo) — para reducir riesgo mientras se sigue probando el esquema simple/trailing rediseñado
 RESERVA_RECUPERO_PCT = 0.0  # 20/08: sacada a pedido de Juanjo (era 15%) — "usaremos la totalidad del capital", cada operación es siempre exactamente PCT_CAPITAL_POR_OPERACION del capital real del día, sin completar con reserva en días de pérdida
-MAX_POSICIONES_SIMULTANEAS = 8  # 20/08: 4->8 (Juanjo) — junto con capital al 5% y sin reserva, mientras se prueba el esquema simple/trailing con menor riesgo por operación
+MAX_POSICIONES_SIMULTANEAS = 12  # 21/08: 8->12 (Juanjo) — con capital al 5% y sin reserva, 12 posiciones representan hasta 60% del capital total en juego como máximo
 # v16: recalibrado 6 -> 1. El 6 (de la actualización 20-21/07) quedaba
 # matemáticamente imposible de alcanzar con el tope nuevo de 2 posiciones
 # simultáneas (nunca puede haber 6 atascadas si el máximo son 2). Se
