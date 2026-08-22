@@ -1096,6 +1096,23 @@ def _cmd_comparar_precio(args: list) -> str:
     return "\n".join(lineas)
 
 
+def _cmd_filtros_duros() -> str:
+    """
+    v18 (21/08) — Cuántas veces bloqueó cada filtro duro (ADX/DI vs.
+    alineación EMA 4h) — para responder con evidencia real si alguno de
+    los 2 está siendo demasiado restrictivo.
+    """
+    r = db.resumen_bloqueo_filtro_duro()
+    if r["total"] == 0:
+        return "📊 Filtros duros: sin bloqueos registrados todavía."
+    lineas = [f"📊 <b>Bloqueos por filtro duro</b> (total: {r['total']})\n"]
+    for filtro, n in sorted(r["por_filtro"].items(), key=lambda x: -x[1]):
+        pct = round(n / r["total"] * 100, 1)
+        nombre = "ADX/DI (fuerza+dirección)" if filtro == "adx_gate" else "Alineación EMA 4h" if filtro == "multi_tf" else filtro
+        lineas.append(f"{nombre}: {n} ({pct}%)")
+    return "\n".join(lineas)
+
+
 def _cmd_deriva_entrada() -> str:
     """
     20/08 — Resumen para el informe del domingo: cuántas señales se
@@ -1375,6 +1392,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_probar_pionex(args)
     elif cmd == "/comparar_precio":
         return _cmd_comparar_precio(args)
+    elif cmd == "/filtros_duros":
+        return _cmd_filtros_duros()
     elif cmd == "/deriva_entrada":
         return _cmd_deriva_entrada()
     elif cmd == "/recalcular_capital":
@@ -1501,6 +1520,9 @@ def procesar_comando(texto: str) -> str:
             "/deriva_entrada\n"
             "  📊 Cuántas señales se bloquean por deriva de precio (±1%)\n"
             "  vs. cuántas pasan — informe del domingo 24/08.\n\n"
+            "/filtros_duros\n"
+            "  📊 Cuántas veces bloqueó cada filtro duro (ADX/DI vs.\n"
+            "  alineación EMA 4h) — evidencia real de cuál limita más.\n\n"
             "/estado_piso PAR\n"
             "  🔍 Estado real del piso ascendente para un par — MFE\n"
             "  trackeado, piso ya fijado, bu_order_id. Ej: /estado_piso ACE\n\n"

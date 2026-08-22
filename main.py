@@ -740,8 +740,10 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     # capital por más tiempo — no alcanza con "parece que hay algo", como
     # sí podía alcanzar cuando las operaciones cerraban en minutos.
     if not sombra_adx_gate:
+        db.guardar_bloqueo_filtro_duro(par, "adx_gate", score, direccion)
         return None  # ADX débil o DI no confirma la dirección — sin tendencia real detrás
     if not sombra_multi_tf:
+        db.guardar_bloqueo_filtro_duro(par, "multi_tf", score, direccion)
         return None  # el precio no está del lado correcto de la EMA20 de 4h — sin respaldo del marco mayor
 
     sombra_volumen = vol_r>=1.5

@@ -3101,3 +3101,47 @@ def senal_persistio_ciclo_anterior(par: str, direccion: str) -> bool:
     n = cur.fetchone()["n"]
     conn.close()
     return n > 0
+
+
+def guardar_bloqueo_filtro_duro(par: str, filtro: str, score: int, direccion: str):
+    """
+    v18 (21/08) — Registra cada vez que un candidato con score>=11 (ya
+    había pasado el umbral normal) fue bloqueado por uno de los 2
+    filtros duros nuevos (adx_gate o multi_tf). Sin esto, no había forma
+    de saber cuál de los 2 estaba limitando más las señales — Juanjo
+    sospechaba que multi_tf (alineación con la EMA de 4h) era el más
+    restrictivo, pero no había evidencia real, solo la sospecha.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bloqueo_filtro_duro_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            par TEXT NOT NULL,
+            filtro TEXT NOT NULL,
+            score INTEGER,
+            direccion TEXT,
+            fecha TEXT NOT NULL,
+            hora TEXT NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        INSERT INTO bloqueo_filtro_duro_log (par, filtro, score, direccion, fecha, hora, creado)
+        VALUES (?,?,?,?,?,?,?)
+    """, (par, filtro, score, direccion, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), ahora.isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def resumen_bloqueo_filtro_duro() -> dict:
+    """v18 (21/08) — Resumen de cuántas veces bloqueó cada filtro duro, con evidencia real."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT filtro, COUNT(*) as n FROM bloqueo_filtro_duro_log GROUP BY filtro")
+    por_filtro = {f["filtro"]: f["n"] for f in cur.fetchall()}
+    cur.execute("SELECT COUNT(*) as n FROM bloqueo_filtro_duro_log")
+    total = cur.fetchone()["n"]
+    conn.close()
+    return {"total": total, "por_filtro": por_filtro}
