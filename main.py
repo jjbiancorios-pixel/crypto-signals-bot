@@ -731,6 +731,22 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         (adx15["plus_di"]>adx15["minus_di"] and es_largo) or
         (adx15["minus_di"]>adx15["plus_di"] and not es_largo)
     )
+    # v18 (21/08) — TODOS los indicadores de sombra se calculan ACÁ,
+    # ANTES de los 2 filtros duros (no después) — antes, si ADX o
+    # multi_tf bloqueaban, el código cortaba con return None sin llegar a
+    # calcular volumen/CCI/OBV/persistencia para ese candidato, dejando
+    # CIEGO cualquier intento de comparar "¿los bloqueados por ADX
+    # mostraban señales buenas en los demás indicadores, o eran
+    # débiles en general?" — pregunta real de Juanjo, sin poder
+    # responderla por este motivo. Ahora se calcula todo primero, se
+    # decide el bloqueo después, y se guarda el cuadro completo.
+    sombra_volumen = vol_r>=1.5
+    sombra_vwap = (precio>vwap15) if es_largo else (precio<vwap15)
+    cci15 = calc_cci(df15)
+    sombra_cci = (cci15 < -100) if es_largo else (cci15 > 100)
+    obv_slope15 = calc_obv_slope(df15)
+    sombra_obv = (obv_slope15 > 0) if es_largo else (obv_slope15 < 0)
+    sombra_persistio = db.senal_persistio_ciclo_anterior(par, direccion)
 
     # v18 (21/08, Juanjo) — 2 chequeos PROMOVIDOS de modo sombra a FILTRO
     # DURO: antes solo se registraban para el informe, ahora bloquean la
@@ -739,23 +755,30 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     # más certeza de que hay tendencia real detrás antes de comprometer
     # capital por más tiempo — no alcanza con "parece que hay algo", como
     # sí podía alcanzar cuando las operaciones cerraban en minutos.
+    detalle_sombra_completo = {
+        "multi_tf": sombra_multi_tf, "adx_gate": sombra_adx_gate,
+        "volumen": sombra_volumen, "vwap": sombra_vwap, "cci": sombra_cci, "obv": sombra_obv,
+        "bb_expandiendo": sombra_bb_expandiendo, "movimiento_atr": sombra_movimiento_atr,
+        "persistio_ciclo_anterior": sombra_persistio,
+    }
     if not sombra_adx_gate:
-        db.guardar_bloqueo_filtro_duro(par, "adx_gate", score, direccion)
+        db.guardar_bloqueo_filtro_duro(par, "adx_gate", score, direccion, detalle_sombra_completo)
+        # 21/08 (pedido de Juanjo) — seguimiento simulado (mismo mecanismo
+        # que ya existía para señales bloqueadas por falta de capital):
+        # sin esto, sabíamos CUÁNTAS veces bloqueaba cada filtro, pero no
+        # cómo les hubiera ido de verdad a esas señales descartadas.
+        db.guardar_senal_simulada(
+            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
+            motivo_no_apertura="filtro_duro_adx_gate"
+        )
         return None  # ADX débil o DI no confirma la dirección — sin tendencia real detrás
     if not sombra_multi_tf:
-        db.guardar_bloqueo_filtro_duro(par, "multi_tf", score, direccion)
+        db.guardar_bloqueo_filtro_duro(par, "multi_tf", score, direccion, detalle_sombra_completo)
+        db.guardar_senal_simulada(
+            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
+            motivo_no_apertura="filtro_duro_multi_tf"
+        )
         return None  # el precio no está del lado correcto de la EMA20 de 4h — sin respaldo del marco mayor
-
-    sombra_volumen = vol_r>=1.5
-    sombra_vwap = (precio>vwap15) if es_largo else (precio<vwap15)
-    cci15 = calc_cci(df15)
-    sombra_cci = (cci15 < -100) if es_largo else (cci15 > 100)
-    obv_slope15 = calc_obv_slope(df15)
-    sombra_obv = (obv_slope15 > 0) if es_largo else (obv_slope15 < 0)
-    # v18 (21/08) — modo sombra: ¿esta misma señal (par+dirección) ya
-    # había calificado en el ciclo anterior? Se consulta ANTES de guardar
-    # esta señal (si no, siempre daría True comparándose contra sí misma).
-    sombra_persistio = db.senal_persistio_ciclo_anterior(par, direccion)
 
     return {
         "par":par,"precio":precio,"score":score,"score_max":16,"pct":pct,

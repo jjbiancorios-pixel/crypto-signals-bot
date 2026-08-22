@@ -11,6 +11,7 @@ No modifica la lógica de análisis/señales. Solo agrega lectura/escritura.
 """
 import sqlite3
 import os
+import json
 from datetime import datetime, timezone, timedelta
 
 DB_PATH = os.environ.get("DB_PATH", "/data/bot.db")  # /data = punto de montaje del Volume en Railway
@@ -3103,7 +3104,7 @@ def senal_persistio_ciclo_anterior(par: str, direccion: str) -> bool:
     return n > 0
 
 
-def guardar_bloqueo_filtro_duro(par: str, filtro: str, score: int, direccion: str):
+def guardar_bloqueo_filtro_duro(par: str, filtro: str, score: int, direccion: str, detalle_sombra: dict = None):
     """
     v18 (21/08) — Registra cada vez que un candidato con score>=11 (ya
     había pasado el umbral normal) fue bloqueado por uno de los 2
@@ -3111,6 +3112,14 @@ def guardar_bloqueo_filtro_duro(par: str, filtro: str, score: int, direccion: st
     de saber cuál de los 2 estaba limitando más las señales — Juanjo
     sospechaba que multi_tf (alineación con la EMA de 4h) era el más
     restrictivo, pero no había evidencia real, solo la sospecha.
+
+    detalle_sombra (agregado 21/08, misma tarde): el resto de los
+    indicadores en modo sombra (volumen, CCI, OBV, Bollinger, ATR,
+    persistencia) para ESTE MISMO candidato — antes no se calculaban
+    para casos bloqueados (el código cortaba con return antes), dejando
+    ciega la pregunta real de Juanjo: "¿los que bloquea ADX son débiles
+    también en los demás indicadores, o el filtro está descartando
+    oportunidades que otros indicadores sí ven bien?"
     """
     conn = _conn()
     cur = conn.cursor()
@@ -3122,15 +3131,21 @@ def guardar_bloqueo_filtro_duro(par: str, filtro: str, score: int, direccion: st
             filtro TEXT NOT NULL,
             score INTEGER,
             direccion TEXT,
+            detalle_sombra TEXT,
             fecha TEXT NOT NULL,
             hora TEXT NOT NULL,
             creado TEXT NOT NULL
         )
     """)
+    try:
+        cur.execute("ALTER TABLE bloqueo_filtro_duro_log ADD COLUMN detalle_sombra TEXT")
+    except Exception:
+        pass
+    detalle_json = json.dumps(detalle_sombra) if detalle_sombra else None
     cur.execute("""
-        INSERT INTO bloqueo_filtro_duro_log (par, filtro, score, direccion, fecha, hora, creado)
-        VALUES (?,?,?,?,?,?,?)
-    """, (par, filtro, score, direccion, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), ahora.isoformat()))
+        INSERT INTO bloqueo_filtro_duro_log (par, filtro, score, direccion, detalle_sombra, fecha, hora, creado)
+        VALUES (?,?,?,?,?,?,?,?)
+    """, (par, filtro, score, direccion, detalle_json, ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"), ahora.isoformat()))
     conn.commit()
     conn.close()
 
@@ -3145,3 +3160,75 @@ def resumen_bloqueo_filtro_duro() -> dict:
     total = cur.fetchone()["n"]
     conn.close()
     return {"total": total, "por_filtro": por_filtro}
+
+
+def analisis_cruzado_bloqueo_adx() -> dict:
+    """
+    v18 (21/08) — Pregunta real de Juanjo: de los candidatos que bloqueó
+    ADX específicamente, ¿cuántos mostraban señales BUENAS en los demás
+    indicadores de sombra (volumen alto, Bollinger expandiendo, momentum
+    ATR fuerte)? Si la mayoría de los bloqueados por ADX también son
+    débiles en todo lo demás, el filtro está siendo coherente (BTC
+    rangeando = mercado sin oportunidades reales, no un filtro
+    demasiado estricto). Si muchos bloqueados por ADX SÍ mostraban
+    buenos indicadores en el resto, ahí sí ADX podría estar
+    descartando oportunidades reales.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT detalle_sombra FROM bloqueo_filtro_duro_log WHERE filtro = 'adx_gate' AND detalle_sombra IS NOT NULL")
+    filas = cur.fetchall()
+    conn.close()
+    if not filas:
+        return {"n": 0}
+
+    detalles = [json.loads(f["detalle_sombra"]) for f in filas]
+    n = len(detalles)
+    con_volumen = sum(1 for d in detalles if d.get("volumen"))
+    con_bb_expandiendo = sum(1 for d in detalles if d.get("bb_expandiendo"))
+    con_persistencia = sum(1 for d in detalles if d.get("persistio_ciclo_anterior"))
+    movimiento_atr_prom = round(sum(d.get("movimiento_atr", 0) or 0 for d in detalles) / n, 2)
+    # "fuerte en otros lados" = al menos 2 de los 3 indicadores booleanos a favor
+    fuertes_en_otros = sum(
+        1 for d in detalles
+        if sum([bool(d.get("volumen")), bool(d.get("bb_expandiendo")), bool(d.get("persistio_ciclo_anterior"))]) >= 2
+    )
+    return {
+        "n": n,
+        "con_volumen_pct": round(con_volumen / n * 100, 1),
+        "con_bb_expandiendo_pct": round(con_bb_expandiendo / n * 100, 1),
+        "con_persistencia_pct": round(con_persistencia / n * 100, 1),
+        "movimiento_atr_promedio": movimiento_atr_prom,
+        "fuertes_en_otros_pct": round(fuertes_en_otros / n * 100, 1),
+    }
+
+
+def resultado_real_de_descartadas_por_filtro() -> dict:
+    """
+    v18 (21/08, pedido de Juanjo) — De las señales descartadas por cada
+    filtro duro (ADX/DI, alineación EMA 4h), ¿cómo les hubiera ido de
+    verdad con seguimiento simulado (TP/SL virtual, mismo mecanismo que
+    ya existía para las bloqueadas por falta de capital)? Solo cuenta
+    las que YA CERRARON (con resultado real, no las que siguen abiertas
+    en simulación).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    resultado = {}
+    for motivo, nombre in [("filtro_duro_adx_gate", "adx_gate"), ("filtro_duro_multi_tf", "multi_tf")]:
+        cur.execute("""
+            SELECT resultado_pct FROM senales_simuladas
+            WHERE motivo_no_apertura = ? AND cerrada = 1 AND resultado_pct IS NOT NULL
+        """, (motivo,))
+        resultados = [f["resultado_pct"] for f in cur.fetchall()]
+        if resultados:
+            ganadoras = [r for r in resultados if r > 0]
+            resultado[nombre] = {
+                "n_cerradas": len(resultados),
+                "win_rate_pct": round(len(ganadoras) / len(resultados) * 100, 1),
+                "resultado_prom_pct": round(sum(resultados) / len(resultados), 2),
+            }
+        else:
+            resultado[nombre] = {"n_cerradas": 0}
+    conn.close()
+    return resultado

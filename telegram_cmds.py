@@ -1100,7 +1100,9 @@ def _cmd_filtros_duros() -> str:
     """
     v18 (21/08) — Cuántas veces bloqueó cada filtro duro (ADX/DI vs.
     alineación EMA 4h) — para responder con evidencia real si alguno de
-    los 2 está siendo demasiado restrictivo.
+    los 2 está siendo demasiado restrictivo. Incluye análisis cruzado:
+    de los que bloqueó ADX, ¿cuántos mostraban señales buenas en los
+    demás indicadores de sombra?
     """
     r = db.resumen_bloqueo_filtro_duro()
     if r["total"] == 0:
@@ -1110,6 +1112,30 @@ def _cmd_filtros_duros() -> str:
         pct = round(n / r["total"] * 100, 1)
         nombre = "ADX/DI (fuerza+dirección)" if filtro == "adx_gate" else "Alineación EMA 4h" if filtro == "multi_tf" else filtro
         lineas.append(f"{nombre}: {n} ({pct}%)")
+
+    cruzado = db.analisis_cruzado_bloqueo_adx()
+    if cruzado["n"] > 0:
+        lineas.append(f"\n🔍 <b>De los {cruzado['n']} bloqueados por ADX — ¿eran débiles en todo, o el filtro descarta oportunidades?</b>")
+        lineas.append(f"Con volumen alto: {cruzado['con_volumen_pct']}%")
+        lineas.append(f"Con Bollinger expandiendo: {cruzado['con_bb_expandiendo_pct']}%")
+        lineas.append(f"Con persistencia (2do ciclo seguido): {cruzado['con_persistencia_pct']}%")
+        lineas.append(f"Movimiento propio prom. (en veces su ATR): {cruzado['movimiento_atr_promedio']}x")
+        lineas.append(f"\n⚖️ Fuertes en al menos 2/3 de los demás indicadores: {cruzado['fuertes_en_otros_pct']}%")
+        if cruzado["fuertes_en_otros_pct"] < 20:
+            lineas.append("💡 Mayoría débil en todo — el filtro parece coherente, no está descartando oportunidades reales.")
+        elif cruzado["fuertes_en_otros_pct"] > 40:
+            lineas.append("⚠️ Buena parte mostraba fuerza en otros indicadores — ADX podría estar descartando oportunidades reales, vale la pena seguir mirando.")
+        else:
+            lineas.append("🤔 Resultado mixto — ni claramente coherente ni claramente descartando de más, seguir juntando datos.")
+
+    resultado_real = db.resultado_real_de_descartadas_por_filtro()
+    lineas.append("\n📈 <b>Cómo les hubiera ido de verdad (seguimiento simulado, TP/SL virtual)</b>")
+    for nombre, datos in resultado_real.items():
+        etiqueta = "ADX/DI" if nombre == "adx_gate" else "Alineación EMA 4h"
+        if datos["n_cerradas"] == 0:
+            lineas.append(f"{etiqueta}: sin cierres todavía (siguen en seguimiento)")
+        else:
+            lineas.append(f"{etiqueta}: {datos['n_cerradas']} cerradas | win rate {datos['win_rate_pct']}% | resultado prom {datos['resultado_prom_pct']:+.2f}%")
     return "\n".join(lineas)
 
 
