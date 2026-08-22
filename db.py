@@ -24,6 +24,25 @@ def _conn():
     return conn
 
 
+def _migrar_columnas_sombra_log(cur):
+    """
+    v18 (21/08) — Agrega 2 columnas nuevas a sombra_log para los 2
+    mecanismos nuevos en modo sombra: expansión de Bollinger (¿se está
+    abriendo el rango, señal de tendencia arrancando?) y movimiento
+    normalizado por ATR (¿es grande ESTE movimiento para ESTA moneda?).
+    """
+    columnas_nuevas = [
+        ("bb_expandiendo", "INTEGER"),
+        ("movimiento_atr", "REAL"),
+        ("persistio_ciclo_anterior", "INTEGER"),
+    ]
+    for nombre, tipo in columnas_nuevas:
+        try:
+            cur.execute(f"ALTER TABLE sombra_log ADD COLUMN {nombre} {tipo}")
+        except Exception:
+            pass
+
+
 def _migrar_columnas_riesgo(cur):
     """
     Agrega columnas nuevas para automatización (capital, zona de riesgo,
@@ -498,6 +517,7 @@ def init_db():
     """)
 
     _migrar_columnas_riesgo(cur)
+    _migrar_columnas_sombra_log(cur)
     _crear_tabla_v17_checkpoints(cur)
     _crear_tabla_score_completo(cur)
     _crear_tabla_experimento_btc_lateral(cur)
@@ -1691,23 +1711,34 @@ def ganancia_hoy_pct(capital_total: float) -> float:
 # ── Modo sombra v16 (multi-timeframe, ADX, volumen, VWAP) ───
 def guardar_log_sombra(senal_id: int, par: str, direccion: str,
                         multi_tf: bool, adx_gate: bool, volumen: bool, vwap: bool,
-                        cci: bool = None, obv: bool = None):
+                        cci: bool = None, obv: bool = None,
+                        bb_expandiendo: bool = None, movimiento_atr: float = None,
+                        persistio_ciclo_anterior: bool = None):
     """
     Guarda si cada uno de los filtros en modo sombra HUBIERA aprobado esta
     señal — no bloquea ni modifica la señal en sí. Se usa para armar el
     informe semanal (resumen_sombra) y decidir cuáles conviene activar
-    como filtro duro. cci/obv son opcionales (None si no se calcularon).
+    como filtro duro. cci/obv/bb_expandiendo/movimiento_atr/
+    persistio_ciclo_anterior son opcionales (None si no se calcularon).
+
+    v18 (21/08): multi_tf y adx_gate PASARON a ser filtro duro (ya no son
+    puramente sombra) — se siguen guardando acá para continuidad
+    histórica del dato, aunque ahora una señal que no los cumple ni
+    siquiera llega a este punto (se descarta antes).
     """
     conn = _conn()
     cur = conn.cursor()
     ahora = datetime.now(TZ_ARG)
     cur.execute("""
-        INSERT INTO sombra_log (senal_id, par, fecha, direccion, multi_tf, adx_gate, volumen, vwap, cci, obv, creado)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO sombra_log (senal_id, par, fecha, direccion, multi_tf, adx_gate, volumen, vwap, cci, obv,
+                                 bb_expandiendo, movimiento_atr, persistio_ciclo_anterior, creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         senal_id, par, ahora.strftime("%Y%m%d"), direccion,
         int(multi_tf), int(adx_gate), int(volumen), int(vwap),
         None if cci is None else int(cci), None if obv is None else int(obv),
+        None if bb_expandiendo is None else int(bb_expandiendo), movimiento_atr,
+        None if persistio_ciclo_anterior is None else int(persistio_ciclo_anterior),
         ahora.isoformat(),
     ))
     conn.commit()
@@ -3042,3 +3073,31 @@ def resumen_deriva_entrada() -> dict:
             "deriva_prom_pct": round(sum(f["deriva_pct"] for f in pasaron) / len(pasaron), 3) if pasaron else None,
         },
     }
+
+
+def senal_persistio_ciclo_anterior(par: str, direccion: str) -> bool:
+    """
+    v18 (21/08) — modo sombra: ¿esta MISMA señal (par + dirección) ya
+    había calificado (llegó a guardarse) en el ciclo anterior (últimos
+    ~20 min, un poco más que los 15 reales para tolerar variación de
+    horario)? Una señal que aparece y desaparece de un ciclo a otro es
+    más sospechosa de ruido que una que se sostiene. Solo se loguea, no
+    bloquea — evaluar con más datos si conviene exigirlo.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    ahora = datetime.now(TZ_ARG)
+    limite = ahora - timedelta(minutes=20)
+    # senales no tiene columna "creado" — usa fecha (YYYYMMDD) + hora_alerta
+    # (HH:MM) por separado. Comparación como string funciona porque ambos
+    # formatos son zero-padded (orden lexicográfico = orden cronológico).
+    fecha_limite = limite.strftime("%Y%m%d")
+    hora_limite = limite.strftime("%H:%M")
+    cur.execute("""
+        SELECT COUNT(*) as n FROM senales
+        WHERE par = ? AND direccion = ?
+          AND (fecha > ? OR (fecha = ? AND hora_alerta >= ?))
+    """, (par, direccion, fecha_limite, fecha_limite, hora_limite))
+    n = cur.fetchone()["n"]
+    conn.close()
+    return n > 0

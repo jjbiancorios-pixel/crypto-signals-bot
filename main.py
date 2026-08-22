@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import numpy as np
 import time
+import threading
 import schedule
 from datetime import datetime, timezone, timedelta
 import os
@@ -475,20 +476,15 @@ def analizar_btc() -> dict:
 
 # ── Grid óptimo ────────────────────────────────────────────
 def calcular_grid(precio, atr_pct, score, adx=None):
-    # v16: piso mínimo diferenciado por ADX (fuerza de tendencia), en vez de
-    # un 6% fijo para todas las monedas por igual. Mismo umbral de 25 que ya
-    # se usa para el gate de modo sombra de ADX (consistencia interna).
-    # Contexto: datos reales (ATOM, MANA) mostraron que el PnL direccional
-    # domina sobre la ganancia de grilla — el beneficio de ensanchar es dar
-    # más margen antes de romper rango en tendencia fuerte, no capturar más
-    # oscilaciones. Cortes 25/35 recomendados por Claude (27/07), sin dato
-    # histórico propio detrás — a revisar con más semanas de automatización.
-    if adx is None or adx < 25:
-        RANGO_PCT_MINIMO = 6.0    # sin tendencia clara / lateral
-    elif adx < 35:
-        RANGO_PCT_MINIMO = 7.5   # tendencia moderada
-    else:
-        RANGO_PCT_MINIMO = 9.0   # tendencia fuerte/sostenida (ej. caso ATOM)
+    # v18 (21/08, Juanjo) — rango de grilla fijo en 20% (antes escalonado
+    # 6/7.5/9% según ADX). Contexto: se detectó que operaciones de minutos
+    # no daban tiempo a que el grid complete ni una ronda (caso real ACE:
+    # 0 rondas en 2 min, 100% del resultado fue ruido de precio amplificado
+    # por apalancamiento, no señal real) — rango más ancho + SL/TP más
+    # amplios (ver STOP_LOSS_INICIAL_PIONEX/TP_FIJO_SIMPLE) buscan dar
+    # tiempo real a que se distinga tendencia de ruido, apoyados en el
+    # 5% de capital por operación (más margen para tolerar el rango ancho).
+    RANGO_PCT_MINIMO = 20.0
     rango_pct=max(atr_pct*3, RANGO_PCT_MINIMO)
     rango_bajo=round(precio*(1-rango_pct/100),6)
     rango_alto=round(precio*(1+rango_pct/100),6)
@@ -565,10 +561,24 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
 
     atr15=calc_atr(df15); atr_pct=(atr15/precio)*100
     bb15=calc_bb(df15["close"]); rsi15=calc_rsi(df15["close"])
+    # v18 (21/08) — modo sombra: ancho de Bollinger de hace 5 velas (75min
+    # atrás en 15m) para comparar si se está EXPANDIENDO (tendencia
+    # arrancando) o CONTRAYENDO (todavía comprimido/rango). Solo se loguea,
+    # no bloquea — evaluar con más datos si conviene exigirlo.
+    try:
+        bb15_previo = calc_bb(df15["close"].iloc[:-5])
+        sombra_bb_expandiendo = bb15["ancho"] > bb15_previo["ancho"]
+    except Exception:
+        sombra_bb_expandiendo = False
     sr15=calc_stoch_rsi(df15["close"]); mc15=calc_macd(df15["close"])
     e20_15=calc_ema(df15["close"],20); pat=patron_vela(df15)
     vol_r=float(df15["vol"].iloc[-1])/max(float(df15["vol"].iloc[-21:-1].mean()),0.0001)
     corr=correlacion_propia(df15,btc["mov_pct"])
+    # v18 (21/08) — modo sombra: movimiento propio de la moneda medido en
+    # múltiplos de su ATR, no en % crudo — un 0.5% puede ser enorme para
+    # una moneda tranquila e insignificante para una volátil. Solo se
+    # loguea, no bloquea.
+    sombra_movimiento_atr = round(abs(corr["mov_propio"]) / atr_pct, 2) if atr_pct > 0 else 0.0
     adx15=calc_adx(df15)  # v16: fuerza de tendencia, usado en calcular_grid (piso de ancho)
     vwap15=calc_vwap(df15)  # v16: régimen — usado en modo sombra y reapertura
 
@@ -721,12 +731,29 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         (adx15["plus_di"]>adx15["minus_di"] and es_largo) or
         (adx15["minus_di"]>adx15["plus_di"] and not es_largo)
     )
+
+    # v18 (21/08, Juanjo) — 2 chequeos PROMOVIDOS de modo sombra a FILTRO
+    # DURO: antes solo se registraban para el informe, ahora bloquean la
+    # señal directamente. Motivo: con operaciones más pacientes (rango
+    # 20%, SL/TP amplios, trailing recién a partir de 4%), conviene exigir
+    # más certeza de que hay tendencia real detrás antes de comprometer
+    # capital por más tiempo — no alcanza con "parece que hay algo", como
+    # sí podía alcanzar cuando las operaciones cerraban en minutos.
+    if not sombra_adx_gate:
+        return None  # ADX débil o DI no confirma la dirección — sin tendencia real detrás
+    if not sombra_multi_tf:
+        return None  # el precio no está del lado correcto de la EMA20 de 4h — sin respaldo del marco mayor
+
     sombra_volumen = vol_r>=1.5
     sombra_vwap = (precio>vwap15) if es_largo else (precio<vwap15)
     cci15 = calc_cci(df15)
     sombra_cci = (cci15 < -100) if es_largo else (cci15 > 100)
     obv_slope15 = calc_obv_slope(df15)
     sombra_obv = (obv_slope15 > 0) if es_largo else (obv_slope15 < 0)
+    # v18 (21/08) — modo sombra: ¿esta misma señal (par+dirección) ya
+    # había calificado en el ciclo anterior? Se consulta ANTES de guardar
+    # esta señal (si no, siempre daría True comparándose contra sí misma).
+    sombra_persistio = db.senal_persistio_ciclo_anterior(par, direccion)
 
     return {
         "par":par,"precio":precio,"score":score,"score_max":16,"pct":pct,
@@ -738,7 +765,9 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         "vwap":vwap15,"ema20":e20_15,  # v16: expuestos para confirma_regimen_vwap_ema (reapertura)
         "sombra":{"multi_tf":sombra_multi_tf,"adx_gate":sombra_adx_gate,
                   "volumen":sombra_volumen,"vwap":sombra_vwap,
-                  "cci":sombra_cci,"obv":sombra_obv},
+                  "cci":sombra_cci,"obv":sombra_obv,
+                  "bb_expandiendo":sombra_bb_expandiendo,"movimiento_atr":sombra_movimiento_atr,
+                  "persistio_ciclo_anterior":sombra_persistio},
         "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral,  # 18/08: comparación viernes
         **grid,
     }
@@ -1419,23 +1448,22 @@ def main():
     # quedaran en cola detrás de mensajes de semanas atrás, sin ningún
     # error visible (ver telegram_cmds.inicializar_offset_telegram).
     telegram_cmds.inicializar_offset_telegram()
-    # 16/08 (FIX): antes decía "7:00-23:00" y "Capital 35%" fijos en el
-    # texto, sin importar los valores reales — quedaron desactualizados
-    # (automatización activa corre 24hs, no 7-23; capital real es 42.5%
-    # desde el 01/08, no 35%). Ahora se arma dinámico desde las variables
-    # reales, para que no vuelva a desactualizarse solo.
+    # 21/08: actualizado a v18 — capital, límites, SL/TP/trailing y
+    # filtros duros armados dinámico desde las variables reales, mismo
+    # criterio que el fix del 16/08 (nunca más texto fijo desactualizado).
     horario_real = "24hs (0:00-23:59)" if AUTOMATIZACION_ACTIVA else "7:00-22:59 ARG"
     capital_pct = gestion_riesgo.PCT_CAPITAL_POR_OPERACION * 100
     margen_pct = gestion_riesgo.RATIO_MARGEN_ORIGEN * 100
     inversion_pct = 100 - margen_pct
     enviar_telegram(
-        f"🤖 <b>JJ Cripto Bot v16 iniciado</b>\n"
+        f"🤖 <b>JJ Cripto Bot v18 iniciado</b>\n"
         f"📊 {len(PARES)} pares | Cascada Bybit→OKX→Binance\n"
-        f"⏰ {horario_real} | cada 15 min (:03, :18, :33, :48)\n"
-        f"💰 Capital {capital_pct:.1f}%x2 posiciones | margen {inversion_pct:.0f}/{margen_pct:.0f} | 10x fijo\n"
-        f"🛑 Stop-loss {gestion_riesgo.STOP_LOSS_PCT}% | TP fijo 1.35%\n"
-        f"📐 Piso de grilla por ADX (6%/7.5%/9%) | Reapertura menos de 5min\n"
-        f"🔬 Modo sombra: multi-tf, ADX, volumen, VWAP, CCI, OBV, grid dinámico\n"
+        f"⏰ {horario_real} | cada 15 min (:01, :16, :31, :46)\n"
+        f"💰 Capital {capital_pct:.1f}%x{gestion_riesgo.MAX_POSICIONES_SIMULTANEAS} posiciones | sin reserva | 10x fijo\n"
+        f"📐 Rango de grilla: 20% fijo\n"
+        f"🛑 SL inicial {pionex_api.SL_INICIAL_SIMPLE*100:.0f}% | TP nativo {pionex_api.TP_FIJO_SIMPLE*100:.0f}%\n"
+        f"📈 Breakeven-stop hasta {pionex_api.UMBRAL_TRAILING_SIMPLE}%, luego trailing con {pionex_api.RETROCESO_PROPORCIONAL_TRAILING*100:.0f}% de retroceso proporcional al pico\n"
+        f"✅ Filtros duros: ADX+DI, alineación EMA 4h | 🔬 Sombra: volumen, VWAP, CCI, OBV, Bollinger, ATR, persistencia\n"
         f"💾 SQLite | 📊 /diario /semanal /mensual /historial /escanear /corregir\n"
         f"Comandos: /ayuda"
     )
@@ -1599,7 +1627,25 @@ def main():
                 enviar_telegram(accion)
         except Exception as e:
             print(f"Error en chequeo rápido de ganancia v17: {e}")
-    schedule.every(2).seconds.do(_chequeo_rapido_ganancia_v17)
+
+    # 21/08 (FIX CRÍTICO) — antes esto corría vía schedule.every(2).seconds
+    # DENTRO del mismo loop de un solo hilo que también hace el escaneo
+    # completo de 94 pares (generar_alertas). El schedule del paquete
+    # "schedule" es cooperativo: mientras generar_alertas() está
+    # corriendo (puede tardar 1-3 min real, entre las esperas entre pares
+    # y el tiempo de cada consulta), NADA MÁS puede correr — el chequeo
+    # rápido del trailing queda completamente congelado durante ese
+    # tiempo. Caso real: ACEUSDT estuvo en +1% "un rato" según Juanjo,
+    # pero nuestro sistema solo registró un pico de +0.01% — coincide con
+    # una ventana de escaneo bloqueando el chequeo justo en ese momento.
+    # Ahora corre en un HILO APARTE con su propio loop, totalmente
+    # independiente del escaneo de pares — nunca se congela, sin importar
+    # cuánto tarde generar_alertas().
+    def _loop_chequeo_rapido():
+        while True:
+            _chequeo_rapido_ganancia_v17()
+            time.sleep(2)
+    threading.Thread(target=_loop_chequeo_rapido, daemon=True).start()
 
     if en_horario_operativo():
         generar_alertas()

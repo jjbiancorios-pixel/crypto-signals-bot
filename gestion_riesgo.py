@@ -515,28 +515,33 @@ def chequeo_rapido_ganancia_v17() -> list:
                 db.actualizar_mejor_resultado(op["id"], resultado_actual)
                 mejor = max(resultado_actual, mejor) if mejor is not None else resultado_actual
 
-            # 20/08 (rediseño, pedido de Juanjo) — se eliminó el SL
-            # ajustado fijo (-2.5%): con picos chicos (ej. +0.28%) dejaba
-            # devolver hasta ~3-4 puntos completos antes de cortar, sin
-            # relación con lo que realmente se había ganado (casos reales:
-            # FETUSDT +0.28%→-2.63%, WIFUSDT +0.82%→-3.74%). Ahora dos
-            # regímenes: (1) ya tocó UMBRAL_TRAILING_SIMPLE (1.35%) ->
-            # trailing de siempre (retrocede RETROCESO_ABSOLUTO_TRAILING
-            # puntos desde el pico). (2) todavía no llegó a 1.35% pero sí
-            # tocó breakeven (>=0%) -> BREAKEVEN-STOP: cierra apenas
-            # vuelve a 0% o peor, SIN margen adicional — protege
-            # exactamente lo que se llegó a tocar, ni un punto más de
-            # regalo.
+            # v18 (21/08, pedido de Juanjo) — se eliminó el SL ajustado
+            # fijo (-2.5%): con picos chicos (ej. +0.28%) dejaba devolver
+            # hasta ~3-4 puntos completos antes de cortar, sin relación
+            # con lo que realmente se había ganado (casos reales:
+            # FETUSDT +0.28%→-2.63%, WIFUSDT +0.82%→-3.74%). Además, el
+            # trailing pasó de puntos fijos (0.5pts) a RETROCESO
+            # PROPORCIONAL al pico (40%) — un punto fijo tenía sentido con
+            # el umbral viejo de 1.35% (picos chicos), pero con el umbral
+            # ahora en 4% (Juanjo: recién ahí hay tendencia real, no ruido
+            # de apalancamiento — ver caso ACE, 0.22% de movimiento real
+            # dio 2+ puntos de resultado con 10x), un punto fijo sería
+            # demasiado ajustado para picos grandes. Dos regímenes:
+            # (1) ya tocó UMBRAL_TRAILING_SIMPLE (4%) -> trailing
+            # proporcional (cierra si retrocede más del 40% DEL PICO,
+            # no un punto fijo). (2) todavía no llegó a 4% pero sí tocó
+            # breakeven (>=0%) -> BREAKEVEN-STOP: cierra apenas vuelve a
+            # 0% o peor, sin margen adicional.
             if mejor is not None and mejor >= pionex_api.UMBRAL_TRAILING_SIMPLE:
-                retroceso_desde_pico = mejor - resultado_actual
-                if retroceso_desde_pico > pionex_api.RETROCESO_ABSOLUTO_TRAILING:
+                piso_trailing = mejor * (1 - pionex_api.RETROCESO_PROPORCIONAL_TRAILING)
+                if resultado_actual <= piso_trailing:
                     try:
                         resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
                             par, bu_order_id, resultado_actual, op.get("capital_asignado"),
-                            nota_pionex=f"esquema simple: trailing — pico {mejor:+.2f}%, retrocedió {retroceso_desde_pico:.2f}pts"
+                            nota_pionex=f"v18: trailing proporcional — pico {mejor:+.2f}%, piso {piso_trailing:+.2f}% (40% retroceso)"
                         )
-                        db.cerrar_senal_automatica(op["id"], resultado_real, motivo="trailing_punto_fijo")
-                        mensaje = f"📈 {par}: TRAILING ejecutado — pico {mejor:+.2f}%, retrocedió {retroceso_desde_pico:.2f}pts, cerrada en {resultado_real:+.2f}%."
+                        db.cerrar_senal_automatica(op["id"], resultado_real, motivo="trailing_proporcional")
+                        mensaje = f"📈 {par}: TRAILING ejecutado — pico {mejor:+.2f}%, piso {piso_trailing:+.2f}% (40% retroceso), cerrada en {resultado_real:+.2f}%."
                         acciones.append(mensaje + (f"\n{advertencia}" if advertencia else ""))
                     except Exception as e:
                         # 20/08 (punto G) — caso real CRVUSDT: el trailing

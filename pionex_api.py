@@ -61,11 +61,11 @@ TAKE_PROFIT_PCT = 0.0135  # 1.35% — referencia INTERNA nuestra (primer checkpo
 # trailing más adelante.
 PROFIT_STOP_CEILING_PIONEX = 0.50  # sin uso mientras dure el esquema simple
 STOP_LOSS_INICIAL_PIONEX = -0.15  # sin uso mientras dure el esquema simple
-TP_FIJO_SIMPLE = 0.15  # 20/08: subido de 1.35% a 15% — techo alto nativo, el cierre real por ganancia ahora lo maneja nuestro trailing (ver UMBRAL_TRAILING_SIMPLE/RETROCESO_ABSOLUTO_TRAILING)
-SL_INICIAL_SIMPLE = -0.05  # 20/08: -5% (era -3%) — mandado directo a Pionex como lossStop al crear
-SL_AJUSTADO_SIMPLE = -2.5  # 20/08: -2.5% (era -1.5%) — nuestro sistema cierra a este nivel SI la ganancia tocó >=0% en algún momento, MIENTRAS no haya llegado todavía a UMBRAL_TRAILING_SIMPLE
-UMBRAL_TRAILING_SIMPLE = 1.35  # 20/08 — a partir de acá, el esquema simple pasa a vigilar el RETROCESO_ABSOLUTO_TRAILING desde el pico, no el SL_AJUSTADO_SIMPLE
-RETROCESO_ABSOLUTO_TRAILING = 0.5  # 20/08: bajado de 1.0 a 0.5 (Juanjo, punto E) — casos reales mostraron retrocesos de hasta 2.42pts con el umbral en 1.0 (detección + ejecución llegaban tarde), compensando con un umbral más chico mientras se evalúa si hace falta migrar a WebSocket (ver F en agenda)
+TP_FIJO_SIMPLE = 0.35  # v18 (21/08, Juanjo): 15%->35% — techo alto nativo, el cierre real por ganancia lo maneja nuestro trailing (ver UMBRAL_TRAILING_SIMPLE/RETROCESO_PROPORCIONAL_TRAILING)
+SL_INICIAL_SIMPLE = -0.08  # v18 (21/08, Juanjo): -5%->-8% — mandado directo a Pionex como lossStop al crear. Con 5% de capital por operación, -8% representa apenas 0.4% del capital total
+SL_AJUSTADO_SIMPLE = -2.5  # SIN USO desde el rediseño a breakeven-stop (20/08) — gestion_riesgo ahora cierra a resultado_actual<=0 directo, no a este valor. Se deja sin borrar por si se retoma.
+UMBRAL_TRAILING_SIMPLE = 4.0  # v18 (21/08, Juanjo): 1.35%->4% — recién a partir de acá se considera que hay una tendencia real, no ruido de apalancamiento (ver caso ACE: 0.22% de movimiento real, 2+ puntos de resultado por el 10x)
+RETROCESO_PROPORCIONAL_TRAILING = 0.40  # v18 (21/08, Juanjo) — REEMPLAZA RETROCESO_ABSOLUTO_TRAILING: ya no es un punto fijo, es un % PROPORCIONAL al pico alcanzado (ej. pico +8% -> cierra si cae a +4.8%, un retroceso del 40% del pico. Antes: punto fijo de 0.5pts, diseñado para picos chicos de 1.35%, ya no aplica con el umbral en 4%)
 
 
 def _firmar(method: str, path: str, query: str, body: str = "") -> tuple:
