@@ -526,12 +526,20 @@ def chequeo_rapido_ganancia_v17() -> list:
             # ahora en 4% (Juanjo: recién ahí hay tendencia real, no ruido
             # de apalancamiento — ver caso ACE, 0.22% de movimiento real
             # dio 2+ puntos de resultado con 10x), un punto fijo sería
-            # demasiado ajustado para picos grandes. Dos regímenes:
-            # (1) ya tocó UMBRAL_TRAILING_SIMPLE (4%) -> trailing
-            # proporcional (cierra si retrocede más del 40% DEL PICO,
-            # no un punto fijo). (2) todavía no llegó a 4% pero sí tocó
-            # breakeven (>=0%) -> BREAKEVEN-STOP: cierra apenas vuelve a
-            # 0% o peor, sin margen adicional.
+            # demasiado ajustado para picos grandes.
+            #
+            # 21/08 (SACADO) — el breakeven-stop (cerraba apenas volvía a
+            # 0% tras haber tocado breakeven) se eliminó por completo.
+            # Caso real: ICPUSDT tocó apenas +0.18% y cerró en 1 minuto,
+            # exactamente el mismo patrón de cierre-prematuro-por-ruido
+            # que todo el rediseño de v18 buscaba evitar — ensanchamos
+            # rango/SL/TP para dar tiempo, pero esta capa intermedia
+            # seguía actuando en minutos sin ningún piso mínimo. Ahora,
+            # entre 0% y 4% de ganancia, la ÚNICA protección es el SL
+            # nativo amplio (-10%, SL_INICIAL_SIMPLE) — se acepta que
+            # algunas ganadoras potenciales vuelvan a pérdida chica, a
+            # cambio de dejar que tendencias reales se desarrollen sin
+            # interrupciones prematuras.
             if mejor is not None and mejor >= pionex_api.UMBRAL_TRAILING_SIMPLE:
                 piso_trailing = mejor * (1 - pionex_api.RETROCESO_PROPORCIONAL_TRAILING)
                 if resultado_actual <= piso_trailing:
@@ -559,20 +567,6 @@ def chequeo_rapido_ganancia_v17() -> list:
                             acciones.append(f"ℹ️ {par}: el trailing quiso cerrar pero ya se había cerrado sola (probable TP nativo) — resultado real se confirma con el chequeo de huérfanas.")
                         else:
                             acciones.append(f"⚠️ {par}: tocó el trailing pero falló el cierre real ({e}) — REVISAR YA.")
-            elif mejor is not None and mejor >= 0 and resultado_actual <= 0:
-                try:
-                    resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
-                        par, bu_order_id, resultado_actual, op.get("capital_asignado"),
-                        nota_pionex=f"esquema simple: breakeven-stop (tocó {mejor:+.2f}%, volvió a {resultado_actual:+.2f}%)"
-                    )
-                    db.cerrar_senal_automatica(op["id"], resultado_real, motivo="breakeven_stop")
-                    mensaje = f"🛑 {par}: BREAKEVEN-STOP ejecutado — tocó {mejor:+.2f}%, cerrada en {resultado_real:+.2f}%."
-                    acciones.append(mensaje + (f"\n{advertencia}" if advertencia else ""))
-                except Exception as e:
-                    if "BOT_ORDER_ALREADY_CLOSED" in str(e):
-                        acciones.append(f"ℹ️ {par}: el breakeven-stop quiso cerrar pero ya se había cerrado sola — resultado real se confirma con el chequeo de huérfanas.")
-                    else:
-                        acciones.append(f"⚠️ {par}: tocó el breakeven-stop pero falló el cierre real ({e}) — REVISAR YA.")
             continue
 
         # Lado ganancia (esquema COMPLEJO, desactivado mientras
