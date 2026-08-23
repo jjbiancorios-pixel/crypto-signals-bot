@@ -3141,7 +3141,23 @@ def guardar_bloqueo_filtro_duro(par: str, filtro: str, score: int, direccion: st
         cur.execute("ALTER TABLE bloqueo_filtro_duro_log ADD COLUMN detalle_sombra TEXT")
     except Exception:
         pass
-    detalle_json = json.dumps(detalle_sombra) if detalle_sombra else None
+    # 22/08 (FIX CRÍTICO) — los valores de detalle_sombra vienen de
+    # comparaciones con columnas de pandas (ej. adx15["adx"]>25), que
+    # devuelven numpy.bool_ en vez de bool nativo de Python — json.dumps
+    # no sabe serializar numpy.bool_, tiraba "Object of type bool_ is
+    # not JSON serializable" cada vez que un candidato con score>=11
+    # llegaba a este punto. Esto silenciosamente ABORTABA el análisis de
+    # ESE par entero (la excepción no estaba atrapada acá, se propagaba
+    # hasta el try/except genérico por par en el loop de 94 pares) —
+    # explicaba por qué /distribucion_scores nunca mostraba 11+: cualquier
+    # candidato que llegaba tan lejos crasheaba antes de completarse.
+    # .item() convierte CUALQUIER escalar numpy (bool_, int64, float64,
+    # etc.) a su equivalente nativo de Python — más robusto que revisar
+    # tipo por tipo.
+    def _a_nativo(v):
+        return v.item() if hasattr(v, "item") else v
+    detalle_sombra_nativo = {k: _a_nativo(v) for k, v in (detalle_sombra or {}).items()} if detalle_sombra else None
+    detalle_json = json.dumps(detalle_sombra_nativo) if detalle_sombra_nativo else None
     cur.execute("""
         INSERT INTO bloqueo_filtro_duro_log (par, filtro, score, direccion, detalle_sombra, fecha, hora, creado)
         VALUES (?,?,?,?,?,?,?,?)

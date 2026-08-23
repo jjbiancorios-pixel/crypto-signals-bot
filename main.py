@@ -771,14 +771,25 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
             {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
             motivo_no_apertura="filtro_duro_adx_gate"
         )
-        return None  # ADX débil o DI no confirma la dirección — sin tendencia real detrás
+        # 22/08 (FIX CRÍTICO) — antes devolvía None directo. El caller
+        # (generar_alertas) solo loguea el score completo cuando recibe
+        # un dict con "no_califico": True — con None no hacía NADA,
+        # ni siquiera el log liviano. Esto dejaba a /distribucion_scores
+        # CIEGO para cualquier candidato que llegaba a score>=11 y después
+        # se bloqueaba acá — nunca se veía un 11+ en el reporte, aunque sí
+        # existieran, porque simplemente no se registraban.
+        return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
+                "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
+                "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral}
     if not sombra_multi_tf:
         db.guardar_bloqueo_filtro_duro(par, "multi_tf", score, direccion, detalle_sombra_completo)
         db.guardar_senal_simulada(
             {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
             motivo_no_apertura="filtro_duro_multi_tf"
         )
-        return None  # el precio no está del lado correcto de la EMA20 de 4h — sin respaldo del marco mayor
+        return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
+                "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
+                "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral}
 
     return {
         "par":par,"precio":precio,"score":score,"score_max":16,"pct":pct,
