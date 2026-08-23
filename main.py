@@ -1534,7 +1534,13 @@ def main():
                 gestion_riesgo.simular_seguimiento()
             except Exception as e:
                 print(f"Error monitoreando riesgo: {e}")
-        schedule.every(1).minutes.do(_monitorear)  # v16: 30 -> 1 min, para que la reapertura <5min sea realmente inmediata
+        # 21/08 (FIX) — sacado de schedule.every(1).minutes acá — se movió
+        # a un hilo aparte más abajo, mismo motivo que el chequeo rápido
+        # del trailing: este schedule vivía en el hilo único que también
+        # escanea 94 pares, quedando congelado durante esa ventana (1-3
+        # min cada 15 min). Afectaba checkpoints de pérdida reales,
+        # reapertura Y el seguimiento simulado (ver /filtros_duros: 0
+        # cierres en 2 horas, parte de la explicación era esto).
 
         # 04/08: cinturón separado PAXG/BTC — modo sombra, 24 combinaciones
         # simuladas, sin capital real. Cada 15 min (no necesita la misma
@@ -1671,6 +1677,18 @@ def main():
             _chequeo_rapido_ganancia_v17()
             time.sleep(2)
     threading.Thread(target=_loop_chequeo_rapido, daemon=True).start()
+
+    # 21/08 (FIX) — mismo motivo que el hilo de arriba: _monitorear
+    # (checkpoints de pérdida reales, techo absoluto, reapertura <5min, y
+    # simular_seguimiento) corría en schedule.every(1).minutes DENTRO del
+    # hilo único que también escanea 94 pares — quedaba congelado durante
+    # esa ventana. Ahora en su propio hilo, cada 60 segundos real,
+    # nunca bloqueado por el escaneo.
+    def _loop_monitoreo_1min():
+        while True:
+            _monitorear()
+            time.sleep(60)
+    threading.Thread(target=_loop_monitoreo_1min, daemon=True).start()
 
     if en_horario_operativo():
         generar_alertas()
