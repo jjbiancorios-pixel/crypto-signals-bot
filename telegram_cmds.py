@@ -1096,6 +1096,46 @@ def _cmd_comparar_precio(args: list) -> str:
     return "\n".join(lineas)
 
 
+def _cmd_comparar_directo(args: list = None) -> str:
+    """
+    v18 (22/08, pedido de Juanjo) — ¿Cómo hubieran dado nuestras señales
+    reales si en vez de un grid en Pionex hubiéramos abierto una posición
+    DIRECTA simple (larga/corta) en Binance/BingX, con distinto
+    apalancamiento? A DIFERENCIA de la primera versión (que solo miraba
+    el resultado final), esta revisa el CAMINO completo de cada
+    operación — si en algún punto la posición directa simulada hubiera
+    tocado su SL, se cuenta como cerrada ahí, no en el resultado final
+    que sí logró el grid (que tiene un perfil de riesgo distinto).
+
+    Uso: /comparar_directo [SL_asumido]  (default -8, ej. /comparar_directo -6)
+    """
+    sl_asumido = -8.0
+    if args and len(args) > 0:
+        try:
+            sl_asumido = float(args[0])
+        except ValueError:
+            pass
+
+    r = db.comparar_grid_vs_directo_con_camino(sl_pct_asumido=sl_asumido)
+    if r["n"] == 0:
+        return ("📊 Sin datos todavía con historial completo — el registro del CAMINO recién arrancó el 22/08, "
+                "no se puede reconstruir el camino de operaciones cerradas ANTES de esa fecha. "
+                "Necesitamos que cierren operaciones nuevas con el historial ya activo.")
+
+    lineas = [f"📊 <b>Grid (real) vs. Posición Directa (simulada, con camino completo)</b> — {r['n']} operaciones, SL asumido {sl_asumido}%\n"]
+    g = r["grid_real"]
+    lineas.append(f"🔷 GRID REAL (lo que pasó de verdad, 10x):")
+    lineas.append(f"Resultado prom: {g['resultado_prom_pct']:+.3f}% | Acumulado: {g['resultado_acumulado_pct']:+.2f}% | Win rate: {g['win_rate_pct']}%\n")
+
+    lineas.append(f"🔶 POSICIÓN DIRECTA simulada (revisa si tocó SL {sl_asumido}% en el camino):")
+    for lev, datos in sorted(r["directo_por_leverage"].items()):
+        marca = " ← actual" if lev == 10 else ""
+        lineas.append(f"{lev}x: prom {datos['resultado_prom_pct']:+.3f}% | acum {datos['resultado_acumulado_pct']:+.2f}% | win rate {datos['win_rate_pct']}% | tocó SL: {datos['veces_toco_sl']}/{r['n']}{marca}")
+
+    lineas.append(f"\n💡 Probá con otro SL: /comparar_directo -6  (o el número que quieras evaluar)")
+    return "\n".join(lineas)
+
+
 def _cmd_resultado_atr() -> str:
     """
     v18 (22/08, pedido de Juanjo) — ¿Las operaciones que entraron con un
@@ -1461,6 +1501,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_probar_pionex(args)
     elif cmd == "/comparar_precio":
         return _cmd_comparar_precio(args)
+    elif cmd == "/comparar_directo":
+        return _cmd_comparar_directo(args)
     elif cmd == "/resultado_atr":
         return _cmd_resultado_atr()
     elif cmd == "/filtros_duros":
@@ -1597,6 +1639,9 @@ def procesar_comando(texto: str) -> str:
             "/resultado_atr\n"
             "  📊 Resultado real agrupado por movimiento en veces su ATR —\n"
             "  para evaluar si conviene un SL/trailing dimensionado por ATR.\n\n"
+            "/comparar_directo [SL]\n"
+            "  📊 Grid real vs. posición directa (Binance/BingX) 2x-10x,\n"
+            "  revisando si tocó SL en el camino. Default -8%. Ej: /comparar_directo -6\n\n"
             "/estado_piso PAR\n"
             "  🔍 Estado real del piso ascendente para un par — MFE\n"
             "  trackeado, piso ya fijado, bu_order_id. Ej: /estado_piso ACE\n\n"

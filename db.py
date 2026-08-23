@@ -663,6 +663,33 @@ def actualizar_desglose_resultado(senal_id: int, rejilla_pct: float, tendencia_p
     conn.close()
 
 
+def guardar_historial_tendencia(senal_id: int, tendencia_pct: float):
+    """
+    v18 (22/08, pedido de Juanjo) — A diferencia de actualizar_desglose_
+    resultado (que sobreescribe), esto APILA cada lectura — necesario
+    para poder simular si una posición DIRECTA (sin grid) hubiera tocado
+    su SL en el camino, antes de llegar al resultado final que sí logró
+    el grid real (que tiene un perfil de riesgo distinto, no se cierra
+    solo porque el precio retroceda fuerte en el medio).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS historial_tendencia_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            senal_id INTEGER NOT NULL,
+            tendencia_pct REAL NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        INSERT INTO historial_tendencia_log (senal_id, tendencia_pct, creado)
+        VALUES (?, ?, ?)
+    """, (senal_id, tendencia_pct, datetime.now(TZ_ARG).isoformat()))
+    conn.commit()
+    conn.close()
+
+
 def actualizar_mejor_resultado(senal_id: int, resultado_actual: float):
     """
     29/07 (modo sombra) — Registra el MEJOR % alcanzado durante la vida de
@@ -3272,3 +3299,141 @@ def resultado_por_movimiento_atr() -> list:
     filas = [dict(f) for f in cur.fetchall()]
     conn.close()
     return filas
+
+
+def comparar_grid_vs_directo(leverages_a_simular=(2, 3, 5, 7, 10)) -> dict:
+    """
+    v18 (22/08, pedido de Juanjo) — Compara, para cada operación REAL
+    cerrada, el resultado del grid (lo que pasó de verdad) contra lo que
+    hubiera dado una posición DIRECTA (larga/corta simple, sin mecánica
+    de grid, como en Binance/BingX) con distintos apalancamientos.
+
+    Cómo se reconstruye: tendencia_pct ya está calculado con 10x fijo
+    (el apalancamiento real que usamos siempre) — dividiendo por 10 se
+    obtiene el movimiento de precio SIN apalancar, y multiplicando por
+    cualquier apalancamiento nuevo se simula qué hubiera dado una
+    posición directa a esa palanca. rejilla_pct (lo que aportó la
+    oscilación propia del grid) NO existiría en una posición directa —
+    se excluye a propósito de la comparación.
+
+    Limitación real: usa la ÚLTIMA lectura de tendencia_pct antes del
+    cierre (no un histórico completo de todo el recorrido) — es una
+    aproximación razonable al momento de cierre, no una reconstrucción
+    exacta de cada instante de la operación.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT par, resultado_pct, rejilla_pct, tendencia_pct, motivo_cierre
+        FROM senales
+        WHERE cerrado = 1 AND resultado_pct IS NOT NULL AND tendencia_pct IS NOT NULL
+        ORDER BY id DESC
+    """)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    if not filas:
+        return {"n": 0}
+
+    movimiento_base_pct = [f["tendencia_pct"] / 10.0 for f in filas]  # sin apalancar (10x fijo real)
+
+    resultado = {"n": len(filas), "grid_real": {}, "directo_por_leverage": {}}
+
+    resultado_grid_total = [f["resultado_pct"] for f in filas]
+    ganadoras_grid = [r for r in resultado_grid_total if r > 0]
+    resultado["grid_real"] = {
+        "resultado_prom_pct": round(sum(resultado_grid_total) / len(resultado_grid_total), 3),
+        "resultado_acumulado_pct": round(sum(resultado_grid_total), 2),
+        "win_rate_pct": round(len(ganadoras_grid) / len(filas) * 100, 1),
+    }
+
+    for lev in leverages_a_simular:
+        resultados_directo = [round(m * lev, 3) for m in movimiento_base_pct]
+        ganadoras = [r for r in resultados_directo if r > 0]
+        resultado["directo_por_leverage"][lev] = {
+            "resultado_prom_pct": round(sum(resultados_directo) / len(resultados_directo), 3),
+            "resultado_acumulado_pct": round(sum(resultados_directo), 2),
+            "win_rate_pct": round(len(ganadoras) / len(filas) * 100, 1),
+        }
+    return resultado
+
+
+def comparar_grid_vs_directo_con_camino(sl_pct_asumido=-8.0, leverages_a_simular=(2, 3, 5, 7, 10)) -> dict:
+    """
+    v18 (22/08, pedido de Juanjo) — Versión CORREGIDA de
+    comparar_grid_vs_directo: la anterior solo miraba el resultado FINAL,
+    sin chequear si una posición directa hubiera tocado su SL en el
+    CAMINO antes de llegar ahí (el grid tiene un perfil de riesgo
+    distinto — no se cierra solo porque el precio retroceda fuerte en
+    el medio). Esta versión usa el HISTORIAL completo (no solo la
+    última lectura) para cada operación, y para cada apalancamiento
+    simulado, revisa si en ALGÚN punto del camino la posición directa
+    habría tocado sl_pct_asumido — si lo toca, esa operación se cuenta
+    como cerrada en el SL asumido, no en el resultado final del grid.
+
+    Solo cuenta operaciones con historial guardado DESDE que se activó
+    este registro (22/08) — las anteriores no tienen el camino completo,
+    solo la última lectura, y quedan afuera de este análisis específico.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT DISTINCT senal_id FROM historial_tendencia_log
+    """)
+    ids_con_historial = [f["senal_id"] for f in cur.fetchall()]
+    if not ids_con_historial:
+        conn.close()
+        return {"n": 0}
+
+    resultado = {"n": 0, "grid_real": {}, "directo_por_leverage": {}}
+    resultados_grid = []
+    resultados_directo = {lev: [] for lev in leverages_a_simular}
+    stops_tocados = {lev: 0 for lev in leverages_a_simular}
+
+    for senal_id in ids_con_historial:
+        cur.execute("SELECT resultado_pct, cerrado FROM senales WHERE id = ?", (senal_id,))
+        senal = cur.fetchone()
+        if not senal or senal["cerrado"] != 1 or senal["resultado_pct"] is None:
+            continue  # todavía abierta, no cuenta para este análisis
+
+        cur.execute("SELECT tendencia_pct FROM historial_tendencia_log WHERE senal_id = ? ORDER BY id ASC", (senal_id,))
+        camino = [f["tendencia_pct"] / 10.0 for f in cur.fetchall()]  # sin apalancar (10x fijo real)
+        if not camino:
+            continue
+
+        resultados_grid.append(senal["resultado_pct"])
+
+        for lev in leverages_a_simular:
+            camino_apalancado = [m * lev for m in camino]
+            # ¿en algún punto del camino tocó el SL asumido para este apalancamiento?
+            tocado = False
+            for punto in camino_apalancado:
+                if punto <= sl_pct_asumido:
+                    resultados_directo[lev].append(sl_pct_asumido)
+                    stops_tocados[lev] += 1
+                    tocado = True
+                    break
+            if not tocado:
+                resultados_directo[lev].append(camino_apalancado[-1])  # llegó al final sin tocar el SL
+
+    if not resultados_grid:
+        conn.close()
+        return {"n": 0}
+    conn.close()
+
+    resultado["n"] = len(resultados_grid)
+    ganadoras_grid = [r for r in resultados_grid if r > 0]
+    resultado["grid_real"] = {
+        "resultado_prom_pct": round(sum(resultados_grid) / len(resultados_grid), 3),
+        "resultado_acumulado_pct": round(sum(resultados_grid), 2),
+        "win_rate_pct": round(len(ganadoras_grid) / len(resultados_grid) * 100, 1),
+    }
+    for lev in leverages_a_simular:
+        lista = resultados_directo[lev]
+        ganadoras = [r for r in lista if r > 0]
+        resultado["directo_por_leverage"][lev] = {
+            "resultado_prom_pct": round(sum(lista) / len(lista), 3),
+            "resultado_acumulado_pct": round(sum(lista), 2),
+            "win_rate_pct": round(len(ganadoras) / len(lista) * 100, 1),
+            "veces_toco_sl": stops_tocados[lev],
+        }
+    return resultado

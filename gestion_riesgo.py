@@ -728,6 +728,15 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         # sobre una posición direccional simple.
         if desglose:
             db.actualizar_desglose_resultado(senal_id, desglose["rejilla_pct"], desglose["tendencia_pct"])
+            # 22/08 (pedido de Juanjo) — además del último valor (que se
+            # sobreescribe), guardar cada lectura en un HISTORIAL — sin
+            # esto no se puede saber si una posición directa simulada
+            # hubiera tocado su SL en el CAMINO antes de llegar al
+            # resultado final que sí logró el grid (que tiene un perfil
+            # de riesgo distinto). Sin datos retroactivos posibles — esto
+            # arranca a juntar información desde ahora, no reconstruye
+            # operaciones ya cerradas.
+            db.guardar_historial_tendencia(senal_id, desglose["tendencia_pct"])
 
         # 28/07 (modo sombra) — registrar el peor resultado alcanzado hasta
         # ahora, para poder calcular MAE real más adelante con datos
