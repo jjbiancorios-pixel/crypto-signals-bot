@@ -1096,6 +1096,49 @@ def _cmd_comparar_precio(args: list) -> str:
     return "\n".join(lineas)
 
 
+def _cmd_resultado_atr() -> str:
+    """
+    v18 (22/08, pedido de Juanjo) — ¿Las operaciones que entraron con un
+    movimiento fuerte en veces su ATR (>1.5x, señal de tendencia real, no
+    ruido) terminan mejor que las que entraron con un movimiento chico
+    en ATR (<1x)? Agrupa el resultado real por rango de ATR, para
+    evaluar si conviene dimensionar el SL/trailing por ATR en vez de %
+    fijo — se usaría junto con /filtros_duros para decidir esto con
+    datos, no solo con la intuición de que "más ATR = mejor señal".
+    """
+    filas = db.resultado_por_movimiento_atr()
+    if not filas:
+        return "📊 Sin datos todavía — hace falta que cierren operaciones reales con el dato de ATR ya guardado (a partir del 21/08)."
+
+    rangos = {
+        "< 1.0x (posible ruido)": [],
+        "1.0x - 1.5x": [],
+        "1.5x - 2.5x": [],
+        "> 2.5x (movimiento fuerte)": [],
+    }
+    for f in filas:
+        atr = f["movimiento_atr"]
+        if atr < 1.0:
+            rangos["< 1.0x (posible ruido)"].append(f)
+        elif atr < 1.5:
+            rangos["1.0x - 1.5x"].append(f)
+        elif atr < 2.5:
+            rangos["1.5x - 2.5x"].append(f)
+        else:
+            rangos["> 2.5x (movimiento fuerte)"].append(f)
+
+    lineas = [f"📊 <b>Resultado real por movimiento en veces su ATR</b> (total: {len(filas)} operaciones cerradas)\n"]
+    for nombre, grupo in rangos.items():
+        if not grupo:
+            lineas.append(f"{nombre}: sin datos todavía")
+            continue
+        ganadoras = [g for g in grupo if g["resultado_pct"] > 0]
+        prom = sum(g["resultado_pct"] for g in grupo) / len(grupo)
+        win_rate = len(ganadoras) / len(grupo) * 100
+        lineas.append(f"{nombre}: n={len(grupo)} | win rate {win_rate:.1f}% | resultado prom {prom:+.2f}%")
+    return "\n".join(lineas)
+
+
 def _cmd_filtros_duros() -> str:
     """
     v18 (21/08) — Cuántas veces bloqueó cada filtro duro (ADX/DI vs.
@@ -1418,6 +1461,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_probar_pionex(args)
     elif cmd == "/comparar_precio":
         return _cmd_comparar_precio(args)
+    elif cmd == "/resultado_atr":
+        return _cmd_resultado_atr()
     elif cmd == "/filtros_duros":
         return _cmd_filtros_duros()
     elif cmd == "/deriva_entrada":
@@ -1549,6 +1594,9 @@ def procesar_comando(texto: str) -> str:
             "/filtros_duros\n"
             "  📊 Cuántas veces bloqueó cada filtro duro (ADX/DI vs.\n"
             "  alineación EMA 4h) — evidencia real de cuál limita más.\n\n"
+            "/resultado_atr\n"
+            "  📊 Resultado real agrupado por movimiento en veces su ATR —\n"
+            "  para evaluar si conviene un SL/trailing dimensionado por ATR.\n\n"
             "/estado_piso PAR\n"
             "  🔍 Estado real del piso ascendente para un par — MFE\n"
             "  trackeado, piso ya fijado, bu_order_id. Ej: /estado_piso ACE\n\n"

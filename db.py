@@ -3248,3 +3248,27 @@ def resultado_real_de_descartadas_por_filtro() -> dict:
             resultado[nombre] = {"n_cerradas": 0}
     conn.close()
     return resultado
+
+
+def resultado_por_movimiento_atr() -> list:
+    """
+    v18 (22/08, pedido de Juanjo) — Cruza el movimiento propio en veces su
+    ATR (guardado en sombra_log al momento de la señal) contra el
+    resultado REAL de la operación una vez cerrada — para evaluar si un
+    SL/trailing dimensionado por ATR (en vez de % fijo) tiene sentido:
+    ¿las operaciones que entraron con un movimiento fuerte en ATR (>1.5x,
+    ya no es ruido) terminan mejor que las que entraron con un movimiento
+    chico en ATR (<1x, más parecido a ruido)?
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT s.par, s.movimiento_atr, sn.resultado_pct, sn.motivo_cierre, sn.direccion
+        FROM sombra_log s
+        JOIN senales sn ON sn.id = s.senal_id
+        WHERE sn.cerrado = 1 AND sn.resultado_pct IS NOT NULL AND s.movimiento_atr IS NOT NULL
+        ORDER BY sn.id DESC
+    """)
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    return filas
