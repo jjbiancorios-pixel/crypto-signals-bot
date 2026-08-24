@@ -1194,6 +1194,30 @@ def _cmd_resultado_atr() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_detalle_simuladas(args: list = None) -> str:
+    """
+    23/08 (Juanjo) — Muestra el detalle crudo de las señales simuladas
+    de un filtro, ordenado por resultado más extremo — para encontrar
+    casos rotos (ej. +511% de promedio, imposible como típico) que estén
+    arrastrando un promedio sin que sea una oportunidad real.
+    Uso: /detalle_simuladas [adx_gate|multi_tf|volumen|persistencia]
+    """
+    filtro_nombre = args[0] if args else "adx_gate"
+    filtro_map = {
+        "adx_gate": "filtro_duro_adx_gate", "multi_tf": "filtro_duro_multi_tf",
+        "volumen": "filtro_duro_volumen", "persistencia": "filtro_duro_persistencia",
+    }
+    filtro_db = filtro_map.get(filtro_nombre, f"filtro_duro_{filtro_nombre}")
+    filas = db.detalle_simuladas_por_filtro(filtro_db)
+    if not filas:
+        return f"📊 Sin cierres todavía para {filtro_nombre}."
+    lineas = [f"📊 <b>Detalle crudo — {filtro_nombre}</b> (top {len(filas)} por magnitud)\n"]
+    for f in filas:
+        sospechoso = " ⚠️ SOSPECHOSO" if abs(f["resultado_pct"]) > 100 else ""
+        lineas.append(f"{f['par']}: {f['resultado_pct']:+.2f}% | {f['motivo_cierre']} | {f['fecha']} {f['hora_apertura']}→{f['hora_cierre']}{sospechoso}")
+    return "\n".join(lineas)
+
+
 def _cmd_filtros_duros() -> str:
     """
     v18 (21/08) — Cuántas veces bloqueó cada filtro duro (ADX/DI vs.
@@ -1522,6 +1546,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_comparar_directo(args)
     elif cmd == "/resultado_atr":
         return _cmd_resultado_atr()
+    elif cmd == "/detalle_simuladas":
+        return _cmd_detalle_simuladas(args)
     elif cmd == "/filtros_duros":
         return _cmd_filtros_duros()
     elif cmd == "/deriva_entrada":
@@ -1653,6 +1679,9 @@ def procesar_comando(texto: str) -> str:
             "/filtros_duros\n"
             "  📊 Cuántas veces bloqueó cada filtro duro (ADX/DI vs.\n"
             "  alineación EMA 4h) — evidencia real de cuál limita más.\n\n"
+            "/detalle_simuladas [filtro]\n"
+            "  📊 Detalle crudo de simuladas por filtro, marca valores\n"
+            "  sospechosos (>100%). Ej: /detalle_simuladas adx_gate\n\n"
             "/resultado_atr\n"
             "  📊 Resultado real agrupado por movimiento en veces su ATR —\n"
             "  para evaluar si conviene un SL/trailing dimensionado por ATR.\n\n"

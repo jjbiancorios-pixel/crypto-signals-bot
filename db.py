@@ -3490,3 +3490,26 @@ def candidato_persistio(par: str, direccion: str) -> bool:
     n = cur.fetchone()["n"]
     conn.close()
     return n > 0
+
+
+def detalle_simuladas_por_filtro(filtro: str = "filtro_duro_adx_gate", limite: int = 15) -> list:
+    """
+    23/08 (Juanjo) — Lista el detalle CRUDO (par, resultado, motivo de
+    cierre) de las señales simuladas por un filtro específico —
+    necesario para encontrar casos extremos que puedan estar rompiendo
+    un promedio (ej. un resultado de +500%, imposible como típico,
+    señal de un dato de precio roto, no de una oportunidad real).
+    Ordenado por resultado más extremo primero (positivo o negativo).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT par, resultado_pct, motivo_cierre, fecha, hora_apertura, hora_cierre
+        FROM senales_simuladas
+        WHERE motivo_no_apertura = ? AND cerrada = 1 AND resultado_pct IS NOT NULL
+        ORDER BY ABS(resultado_pct) DESC
+        LIMIT ?
+    """, (filtro, limite))
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    return filas
