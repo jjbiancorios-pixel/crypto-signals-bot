@@ -47,7 +47,7 @@ PARES = [
     "PENGUUSDT","MOCAUSDT","SCRUSDT",
     # 10/08: 14 pares nuevos, disponibilidad confirmada por Juanjo en la
     # app (de 15 propuestos, HIGH no está disponible como bot y se sacó)
-    "FILUSDT","BCHUSDT","DASHUSDT","XMRUSDT","RENDERUSDT",
+    "FILUSDT","BCHUSDT","DASHUSDT","RENDERUSDT",
     "JUPUSDT","NEOUSDT","LPTUSDT","PENDLEUSDT","ENSUSDT",
     "YGGUSDT","MANTAUSDT","TRBUSDT","API3USDT",
 ]
