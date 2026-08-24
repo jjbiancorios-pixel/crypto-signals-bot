@@ -1208,7 +1208,9 @@ def _cmd_filtros_duros() -> str:
     lineas = [f"📊 <b>Bloqueos por filtro duro</b> (total: {r['total']})\n"]
     for filtro, n in sorted(r["por_filtro"].items(), key=lambda x: -x[1]):
         pct = round(n / r["total"] * 100, 1)
-        nombre = "ADX/DI (fuerza+dirección)" if filtro == "adx_gate" else "Alineación EMA 4h" if filtro == "multi_tf" else filtro
+        nombres_filtro = {"adx_gate": "ADX/DI (fuerza+dirección)", "multi_tf": "Alineación EMA 4h",
+                          "volumen": "Volumen (respaldo real)", "persistencia": "Persistencia (2do ciclo seguido)"}
+        nombre = nombres_filtro.get(filtro, filtro)
         lineas.append(f"{nombre}: {n} ({pct}%)")
 
     cruzado = db.analisis_cruzado_bloqueo_adx()

@@ -118,7 +118,7 @@ def obtener_precision_par(par: str) -> int:
 
 def _armar_body(par: str, top: float, bottom: float, row: int,
                  capital_usdt: float, leverage: int, trend: str,
-                 grid_type: str, extra_margin_usdt: float = 0) -> dict:
+                 grid_type: str, extra_margin_usdt: float = 0, sl_pct: float = None) -> dict:
     base = par.upper().replace("USDT", "").replace(".PERP", "")
     precision = obtener_precision_par(base)
 
@@ -134,7 +134,10 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
         "profitStopType": "profit_ratio",
         "profitStop": str(TP_FIJO_SIMPLE),
         "lossStopType": "profit_ratio",
-        "lossStop": str(SL_INICIAL_SIMPLE),
+        # 23/08 (Juanjo) — SL ahora puede venir calculado por ATR de cada
+        # moneda (más ancho para las volátiles, nunca más ajustado que el
+        # piso mínimo) — sl_pct=None cae al fijo de siempre (respaldo).
+        "lossStop": str(sl_pct if sl_pct is not None else SL_INICIAL_SIMPLE),
     }
     if extra_margin_usdt and extra_margin_usdt > 0:
         # Margen de origen (dinámico): reservado desde la apertura, baja el
@@ -840,7 +843,7 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
                           capital_usdt: float, leverage: int = 10,  # FIJO: 10x siempre, decisión confirmada por Juanjo
                           trend: str = "long",
                           grid_type: str = "arithmetic",
-                          extra_margin_usdt: float = 0) -> dict:
+                          extra_margin_usdt: float = 0, sl_pct: float = None) -> dict:
     """
     Crea una grilla de futuros REAL en Pionex.
 
@@ -850,9 +853,11 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
     extra_margin_usdt: margen de origen (colchón reservado desde la apertura,
         no es capital adicional "de la nada" — se descuenta del capital
         disponible total antes de abrir, ver gestion_riesgo.py)
+    sl_pct: 23/08 (Juanjo) — SL calculado por ATR de la moneda (ver
+        calcular_sl_atr), None cae al fijo SL_INICIAL_SIMPLE.
     """
     path = "/api/v1/bot/orders/futuresGrid/create"
-    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type, extra_margin_usdt)
+    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type, extra_margin_usdt, sl_pct)
     body_json = json.dumps(body_dict, separators=(",", ":"))
     timestamp, firma = _firmar("POST", path, "", body_json)
 
@@ -864,3 +869,24 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
     resp = _session.post(url, headers=headers, data=body_json, timeout=15)
     return resp.json()
+
+
+def calcular_sl_atr(atr_pct: float, multiplo: float = 3.0, piso_minimo: float = 15.0) -> float:
+    """
+    23/08 (Juanjo) — SL dimensionado por la volatilidad propia de cada
+    moneda, en vez de un % fijo para todas. Fórmula: multiplo × ATR% de
+    la moneda, con un PISO MÍNIMO de ancho (nunca más ajustado que
+    piso_minimo, aunque la moneda sea muy tranquila) — el ATR sí puede
+    agrandarlo por encima de eso para monedas volátiles.
+
+    multiplo=3.0: elegido como punto de partida razonable (múltiplo
+    común en la práctica de trading para dimensionar stops por ATR — no
+    es un número confirmado con datos propios todavía, a revisar con
+    /resultado_atr una vez que haya suficientes cierres reales con este
+    esquema activo).
+
+    Devuelve el SL como número NEGATIVO en % (ej. -15.0, -22.5), listo
+    para pasar a crear_grilla_futuros(sl_pct=...).
+    """
+    ancho = max(atr_pct * multiplo, piso_minimo)
+    return round(-ancho, 2)

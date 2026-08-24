@@ -309,6 +309,26 @@ def _evaluar_factores_tecnicos_perdida(par: str, es_largo: bool) -> dict:
         return {"factores_cumplidos": 0, "error": str(e)}
 
 
+def _calcular_piso_trailing_escalonado(pico: float) -> float:
+    """
+    23/08 (Juanjo) — Reemplaza el retroceso proporcional FIJO (40%) por
+    un esquema escalonado: menos exigente en tendencias que recién
+    arrancan, más exigente cuanto más grande ya demostró ser el
+    movimiento — dejar respirar a las chicas, proteger más a las grandes.
+    Umbral de activación sigue siendo pionex_api.UMBRAL_TRAILING_SIMPLE (4%).
+        4% - 8%:  retrocede hasta 50% del pico
+        8% - 10%: retrocede hasta 30% del pico
+        > 10%:    retrocede hasta 20% del pico
+    """
+    if pico <= 8:
+        retroceso = 0.50
+    elif pico <= 10:
+        retroceso = 0.30
+    else:
+        retroceso = 0.20
+    return round(pico * (1 - retroceso), 4)
+
+
 def _cerrar_y_obtener_resultado_real(par: str, bu_order_id: str, resultado_estimado: float,
                                        capital_asignado: float, nota_pionex: str) -> tuple:
     """
@@ -541,15 +561,15 @@ def chequeo_rapido_ganancia_v17() -> list:
             # cambio de dejar que tendencias reales se desarrollen sin
             # interrupciones prematuras.
             if mejor is not None and mejor >= pionex_api.UMBRAL_TRAILING_SIMPLE:
-                piso_trailing = mejor * (1 - pionex_api.RETROCESO_PROPORCIONAL_TRAILING)
+                piso_trailing = _calcular_piso_trailing_escalonado(mejor)
                 if resultado_actual <= piso_trailing:
                     try:
                         resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
                             par, bu_order_id, resultado_actual, op.get("capital_asignado"),
-                            nota_pionex=f"v18: trailing proporcional — pico {mejor:+.2f}%, piso {piso_trailing:+.2f}% (40% retroceso)"
+                            nota_pionex=f"v18: trailing proporcional — pico {mejor:+.2f}%, piso {piso_trailing:+.2f}% (escalonado)"
                         )
                         db.cerrar_senal_automatica(op["id"], resultado_real, motivo="trailing_proporcional")
-                        mensaje = f"📈 {par}: TRAILING ejecutado — pico {mejor:+.2f}%, piso {piso_trailing:+.2f}% (40% retroceso), cerrada en {resultado_real:+.2f}%."
+                        mensaje = f"📈 {par}: TRAILING ejecutado — pico {mejor:+.2f}%, piso {piso_trailing:+.2f}% (escalonado), cerrada en {resultado_real:+.2f}%."
                         acciones.append(mensaje + (f"\n{advertencia}" if advertencia else ""))
                     except Exception as e:
                         # 20/08 (punto G) — caso real CRVUSDT: el trailing

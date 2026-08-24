@@ -3437,3 +3437,56 @@ def comparar_grid_vs_directo_con_camino(sl_pct_asumido=-8.0, leverages_a_simular
             "veces_toco_sl": stops_tocados[lev],
         }
     return resultado
+
+
+def guardar_candidato_pendiente(par: str, direccion: str):
+    """
+    23/08 (Juanjo) — Registra que este par+dirección llegó hasta el
+    filtro de persistencia en ESTE ciclo (haya abierto o no) — necesario
+    porque un candidato bloqueado por falta de persistencia NUNCA llega
+    a guardarse en "senales", así que el próximo ciclo no tendría forma
+    de saber que "ya estuvo acá" si no se registra en algún lado aparte.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS candidato_pendiente_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            par TEXT NOT NULL,
+            direccion TEXT NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        INSERT INTO candidato_pendiente_log (par, direccion, creado)
+        VALUES (?, ?, ?)
+    """, (par, direccion, datetime.now(TZ_ARG).isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def candidato_persistio(par: str, direccion: str) -> bool:
+    """
+    23/08 (Juanjo) — ¿Este mismo par+dirección ya había llegado hasta acá
+    en el ciclo ANTERIOR (últimos ~20 min)? Se consulta ANTES de guardar
+    el registro de este ciclo (si no, siempre encontraría su propia
+    entrada y daría True).
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS candidato_pendiente_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            par TEXT NOT NULL,
+            direccion TEXT NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+    limite = (datetime.now(TZ_ARG) - timedelta(minutes=20)).isoformat()
+    cur.execute("""
+        SELECT COUNT(*) as n FROM candidato_pendiente_log
+        WHERE par = ? AND direccion = ? AND creado >= ?
+    """, (par, direccion, limite))
+    n = cur.fetchone()["n"]
+    conn.close()
+    return n > 0

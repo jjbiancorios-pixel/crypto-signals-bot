@@ -650,19 +650,14 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     elif btc["estado"]=="BAJO_RANGEA":
         score+=(2 if precio<e20_15 else 1); razones.append(f"✅ BTC post-baja rangeando → CORTO")
     elif btc["estado"]=="LATERAL":
-        # 18/08 (Opción 2 del experimento "BTC lateral"): antes daba
-        # siempre +1 fijo, ignorando si la moneda divergía fuerte por su
-        # cuenta (era un elif, nunca llegaba a mirar corr["diverge_fuerte"]
-        # en este caso). Ahora, si además diverge fuerte, da +2 (mismo
-        # peso que BTC post-suba/baja rangeando). bono_btc_lateral queda
-        # registrado en el resultado para poder comparar el viernes contra
-        # el escenario sin el cambio (score - 1 en los casos con bono).
-        if corr["diverge_fuerte"]:
-            score+=2; razones.append(f"✅ BTC lateral + movimiento propio fuerte: {corr['mov_propio']}%")
-            bono_btc_lateral = True
-        else:
-            score+=1; razones.append(f"✅ BTC lateral")
-            bono_btc_lateral = False
+        # 23/08 (SACADO, pedido de Juanjo) — el experimento "Opción 2"
+        # (+2 en vez de +1 cuando además diverge fuerte) se midió con
+        # /experimento_btc_lateral: de 53 señales que calificaron SOLO
+        # por este bono, 51 ya cerradas dieron 13.7% de win rate y
+        # -0.33% de resultado promedio — muy por debajo del resto del
+        # sistema (~98% históricamente). Vuelve a +1 fijo, sin mirar
+        # divergencia propia en este caso.
+        score+=1; razones.append(f"✅ BTC lateral")
     elif corr["diverge_fuerte"]:
         score+=1; razones.append(f"✅ Movimiento propio: {corr['mov_propio']}%")
 
@@ -786,6 +781,43 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         db.guardar_senal_simulada(
             {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
             motivo_no_apertura="filtro_duro_multi_tf"
+        )
+        return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
+                "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
+                "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral}
+
+    # 23/08 (Juanjo) — volumen PROMOVIDO de modo sombra a filtro duro,
+    # mismo patrón que ADX/multi_tf: una "tendencia" sin volumen de
+    # respaldo real es más sospechosa de ser ruido.
+    if not sombra_volumen:
+        db.guardar_bloqueo_filtro_duro(par, "volumen", score, direccion, detalle_sombra_completo)
+        db.guardar_senal_simulada(
+            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
+            motivo_no_apertura="filtro_duro_volumen"
+        )
+        return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
+                "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
+                "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral}
+
+    # 23/08 (Juanjo) — persistencia PROMOVIDA de modo sombra a filtro
+    # duro: exige que la MISMA señal (par+dirección) haya calificado
+    # también en el ciclo anterior (15 min atrás) antes de abrir — filtra
+    # señales que aparecen y se revierten rápido. Como una señal
+    # bloqueada acá NUNCA llega a guardarse en la tabla "senales" (se
+    # descarta), sombra_persistio (que mira esa tabla) nunca podría
+    # encontrar el ciclo anterior de un candidato que también fue
+    # bloqueado — por eso se guarda aparte en candidato_pendiente_log,
+    # exista o no una apertura real detrás. db.candidato_persistio() mide
+    # CUÁNTOS candidatos que llegaron hasta acá NO tenían el ciclo
+    # anterior — es el número que permite ver cuánto reduce esto la
+    # cantidad de señales, tal como pidió Juanjo.
+    ya_persistio = db.candidato_persistio(par, direccion)
+    db.guardar_candidato_pendiente(par, direccion)
+    if not ya_persistio:
+        db.guardar_bloqueo_filtro_duro(par, "persistencia", score, direccion, detalle_sombra_completo)
+        db.guardar_senal_simulada(
+            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
+            motivo_no_apertura="filtro_duro_persistencia"
         )
         return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
                 "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
@@ -975,6 +1007,11 @@ def _abrir_grilla_automatica(r: dict, check: dict):
             # da un espaciado de apenas 1.1x la fee ida-y-vuelta en rangos
             # angostos (3%) — casi sin margen real. La fórmula propia da 5x la
             # fee siempre, sea cual sea el ancho.
+            # 23/08 (Juanjo) — SL dimensionado por el ATR propio de la
+            # moneda, en vez del fijo -10% para todas — más ancho para
+            # las volátiles, nunca más ajustado que el piso mínimo de
+            # -15%.
+            sl_atr = pionex_api.calcular_sl_atr(r["atr_pct"])
             resp = pionex_api.crear_grilla_futuros(
                 par=r["par"].replace("USDT", ""),
                 top=rango_alto_fresco,
@@ -984,6 +1021,7 @@ def _abrir_grilla_automatica(r: dict, check: dict):
                 leverage=10,  # FIJO: decisión confirmada, siempre 10x
                 trend="long" if r["direccion"] == "📈 LARGO" else "short",
                 extra_margin_usdt=check["margen_origen"],
+                sl_pct=sl_atr,
             )
             bu_order_id = resp.get("data", {}).get("buOrderId")
             if bu_order_id:
