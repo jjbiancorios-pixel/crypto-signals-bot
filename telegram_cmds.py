@@ -706,9 +706,15 @@ def _cmd_filtros() -> str:
 
 
 def _cmd_griddinamico() -> str:
-    """07/08 — Resumen del grid dinámico en modo sombra (regla DGT, rebote confirmado)."""
+    """
+    07/08 — Resumen del grid dinámico en modo sombra (regla DGT, rebote confirmado).
+    22/08 (FIX CRÍTICO) — mismo bug que /mae: buscaba la clave "total",
+    pero resumen_grid_dinamico() devuelve "total_chequeos" cuando SÍ hay
+    datos. Siempre decía "sin datos suficientes todavía", sin importar
+    cuántos chequeos reales hubiera.
+    """
     r = db.resumen_grid_dinamico()
-    if r.get("total", 0) == 0:
+    if r.get("total_chequeos", 0) == 0:
         return "📐 Grid dinámico: sin datos suficientes todavía."
     return (
         f"📐 <b>Grid dinámico</b> (modo sombra)\n"
@@ -725,23 +731,32 @@ def _cmd_mae() -> str:
     07/08 — Resumen de MAE/MFE + motivo de cierre, todo junto (para no
     tener que correr 3 comandos separados). Incluye aviso sobre el fix
     del 07/08 (datos de antes de esa fecha pueden estar subestimados).
+
+    22/08 (FIX CRÍTICO) — usaba la clave "total" para chequear si había
+    datos, pero resumen_mae()/resumen_mfe() devuelven "total_con_dato"
+    cuando SÍ hay datos ("total" solo existe en el caso {"total": 0} de
+    "no hay nada"). Con la clave equivocada, .get("total", 0) siempre
+    daba 0 — el comando decía "sin datos suficientes todavía" SIEMPRE,
+    sin importar cuántas operaciones reales hubiera. Nunca se había
+    detectado porque el mensaje de "sin datos" no generaba sospecha por
+    sí solo.
     """
     mae = db.resumen_mae()
     mfe = db.resumen_mfe()
     motivos = db.resumen_por_motivo_cierre()
 
-    if mae.get("total", 0) == 0 and mfe.get("total", 0) == 0:
+    if mae.get("total_con_dato", 0) == 0 and mfe.get("total_con_dato", 0) == 0:
         return "📉 MAE/MFE: sin datos suficientes todavía."
 
     lineas = ["📉 <b>MAE / MFE / motivo de cierre</b>\n"]
-    if mae.get("total"):
+    if mae.get("total_con_dato"):
         lineas.append(
             f"<b>MAE</b> (peor punto alcanzado) — {mae['total_con_dato']} operaciones con dato "
             f"({'✅ confiable' if mae['confiable'] else '⚠️ muestra chica, no confiable todavía'})\n"
             f"Ganadoras: peor caso {mae['mae_ganadoras_peor']}%, promedio {mae['mae_ganadoras_promedio']}%\n"
             f"Perdedoras: promedio {mae['mae_perdedoras_promedio']}%"
         )
-    if mfe.get("total"):
+    if mfe.get("total_con_dato"):
         lineas.append(
             f"\n<b>MFE</b> (mejor punto alcanzado) — {mfe['total_con_dato']} operaciones "
             f"({'✅ confiable' if mfe['confiable'] else '⚠️ muestra chica'})\n"
