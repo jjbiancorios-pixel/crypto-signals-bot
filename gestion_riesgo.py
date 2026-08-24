@@ -961,22 +961,27 @@ def intentar_recalculo_diario(forzar: bool = False) -> str:
 def simular_seguimiento():
     """
     03/08 — Sigue el precio de mercado real de las señales SIMULADAS
-    (calificaron score≥11 pero no consiguieron lugar real por el tope de
-    2 posiciones / 1 apertura por ciclo). No arriesga capital real — usa
-    una aproximación de movimiento de precio + apalancamiento (SIN el
-    aporte extra de oscilación del grid, que en datos reales resultó ser
-    chico frente al componente de tendencia — ver rejilla vs. tendencia).
+    (bloqueadas por falta de capital, o por los filtros duros de v18) —
+    no arriesga capital real, usa una aproximación de movimiento de
+    precio + apalancamiento (SIN el aporte extra de oscilación del grid).
     Se llama desde el mismo ciclo de 1 min que el resto del monitoreo.
 
-    Cierra por TP (1.35%) o por STOP_LOSS_PCT (-20%), igual que una
-    operación real — para poder comparar patrones de comportamiento en
-    pérdida sin esperar semanas de datos reales (solo 2 posiciones a la
-    vez limitan mucho la velocidad de aprendizaje real).
+    23/08 (Juanjo) — ACTUALIZADO para usar la lógica REAL de v18, en vez
+    de los parámetros viejos de v16 (TP fijo 1.35% / SL -15% simple).
+    Antes esto comparaba "cómo les hubiera ido" contra reglas que ya no
+    usamos — la comparación no servía para evaluar el diseño actual.
+    Ahora replica: trailing ESCALONADO a partir de 4% de ganancia (ver
+    _calcular_piso_trailing_escalonado), sin protección intermedia entre
+    0-4% (igual que las reales, desde que se sacó el breakeven-stop), y
+    el piso de -15% como SL (mismo valor que STOP_LOSS_PCT — no se tiene
+    el ATR propio de cada moneda guardado para las simuladas, se usa el
+    piso mínimo como aproximación razonable, no el cálculo completo por
+    ATR que sí tienen las reales).
     """
     abiertas = db.operaciones_simuladas_abiertas()
     for op in abiertas:
         try:
-            precio_actual = pionex_api.obtener_precio_mercado(op["par"])
+            precio_actual = pionex_api.obtener_precio_pionex_directo(op["par"])
         except Exception:
             precio_actual = None
         if precio_actual is None or not op["precio_entrada"]:
@@ -987,11 +992,17 @@ def simular_seguimiento():
         resultado_simulado = cambio_pct * (op["apal"] or 10) * (1 if es_largo else -1)
 
         db.actualizar_seguimiento_simulada(op["id"], resultado_simulado)
+        mejor = op.get("mejor_resultado_pct")
+        mejor = max(resultado_simulado, mejor) if mejor is not None else resultado_simulado
 
-        if resultado_simulado >= 1.35:
-            db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="tp_simulado")
-        elif resultado_simulado <= STOP_LOSS_PCT:
-            db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="stop_loss_simulado")
+        if resultado_simulado <= STOP_LOSS_PCT:
+            db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="sl_simulado_v18")
+        elif resultado_simulado >= pionex_api.TP_FIJO_SIMPLE * 100:
+            db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="tp_techo_simulado_v18")
+        elif mejor >= pionex_api.UMBRAL_TRAILING_SIMPLE:
+            piso_trailing = _calcular_piso_trailing_escalonado(mejor)
+            if resultado_simulado <= piso_trailing:
+                db.cerrar_senal_simulada(op["id"], resultado_simulado, motivo="trailing_simulado_v18")
 
 
 def chequear_huerfanas() -> list:
