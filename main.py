@@ -690,7 +690,8 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         # seguimiento simulado completo para las que casi llegan).
         return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion_cand,
                 "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
-                "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral}
+                "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral,
+                "movimiento_atr": sombra_movimiento_atr}
 
     # 17/08: la señal calificó (score>=11) — recién ACÁ vale la pena
     # loguear el detalle completo de la cascada de precio (fuente que
@@ -763,7 +764,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         # sin esto, sabíamos CUÁNTAS veces bloqueaba cada filtro, pero no
         # cómo les hubiera ido de verdad a esas señales descartadas.
         db.guardar_senal_simulada(
-            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
+            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones, "movimiento_atr": sombra_movimiento_atr},
             motivo_no_apertura="filtro_duro_adx_gate"
         )
         # 22/08 (FIX CRÍTICO) — antes devolvía None directo. El caller
@@ -779,7 +780,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     if not sombra_multi_tf:
         db.guardar_bloqueo_filtro_duro(par, "multi_tf", score, direccion, detalle_sombra_completo)
         db.guardar_senal_simulada(
-            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
+            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones, "movimiento_atr": sombra_movimiento_atr},
             motivo_no_apertura="filtro_duro_multi_tf"
         )
         return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
@@ -792,7 +793,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     if not sombra_volumen:
         db.guardar_bloqueo_filtro_duro(par, "volumen", score, direccion, detalle_sombra_completo)
         db.guardar_senal_simulada(
-            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
+            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones, "movimiento_atr": sombra_movimiento_atr},
             motivo_no_apertura="filtro_duro_volumen"
         )
         return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
@@ -816,7 +817,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     if not ya_persistio:
         db.guardar_bloqueo_filtro_duro(par, "persistencia", score, direccion, detalle_sombra_completo)
         db.guardar_senal_simulada(
-            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones},
+            {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones, "movimiento_atr": sombra_movimiento_atr},
             motivo_no_apertura="filtro_duro_persistencia"
         )
         return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
@@ -1263,7 +1264,8 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                     if r["score"] in (9, 10):
                         db.guardar_senal_simulada(
                             {"par": par, "direccion": r["direccion_candidata"], "precio": r["precio"],
-                             "apal": 10, "score": r["score"], "razones": r.get("razones")},
+                             "apal": 10, "score": r["score"], "razones": r.get("razones"),
+                             "movimiento_atr": r.get("movimiento_atr")},
                             motivo_no_apertura=f"score_bajo_{r['score']}"
                         )
                     # 18/08 — experimento "Opción 2" (BTC lateral + divergencia
@@ -1361,7 +1363,7 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                     # 03/08: como no consiguió lugar real, se guarda aparte
                     # para simular su comportamiento (MAE/MFE, TP/stop-loss)
                     # sin arriesgar capital — más datos de patrones, más rápido.
-                    db.guardar_senal_simulada(r, motivo_no_apertura=check["motivo"])
+                    db.guardar_senal_simulada({**r, "movimiento_atr": r.get("sombra", {}).get("movimiento_atr")}, motivo_no_apertura=check["motivo"])
                     # 19/08 (FIX CRÍTICO) — mismo problema que el caso de
                     # apertura fallida: la señal simulada es un registro
                     # APARTE (tabla senales_simuladas) — el senal_id

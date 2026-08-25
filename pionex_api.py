@@ -91,16 +91,23 @@ def _firmar(method: str, path: str, query: str, body: str = "") -> tuple:
     return timestamp, firma
 
 
-def obtener_precision_par(par: str) -> int:
+def obtener_precision_par(par: str, quote: str = "USDT") -> int:
     """
     Consulta GET /common/symbols para saber cuántos decimales acepta
     Pionex en el precio (quotePrecision) para este par específico.
     Cada par tiene su propia precisión — usar un valor fijo para todos
     causa el error 'top not match quote precision'.
     Si falla la consulta, devuelve 4 como default razonable.
+
+    23/08 (Juanjo, PAXG) — agregado el parámetro quote: antes armaba el
+    símbolo siempre como {PAR}_USDT_PERP, sin importar la moneda real de
+    cotización. Para PAXG (cotiza contra BTC, no USDT), esto consultaba
+    un símbolo que no existe (PAXG_USDT_PERP), la consulta devolvía
+    vacío, y caía al default de 4 decimales — insuficiente para un
+    precio en el rango de 0.05-0.06, causando un rango mal redondeado.
     """
     base = par.upper().replace("USDT", "").replace(".PERP", "")
-    symbol = f"{base}_USDT_PERP"
+    symbol = f"{base}_{quote}_PERP"
     path = "/api/v1/common/symbols"
     query = f"symbols={symbol}&type=PERP"
     timestamp, firma = _firmar("GET", path, query)
@@ -118,9 +125,10 @@ def obtener_precision_par(par: str) -> int:
 
 def _armar_body(par: str, top: float, bottom: float, row: int,
                  capital_usdt: float, leverage: int, trend: str,
-                 grid_type: str, extra_margin_usdt: float = 0, sl_pct: float = None) -> dict:
+                 grid_type: str, extra_margin_usdt: float = 0, sl_pct: float = None,
+                 quote: str = "USDT") -> dict:
     base = par.upper().replace("USDT", "").replace(".PERP", "")
-    precision = obtener_precision_par(base)
+    precision = obtener_precision_par(base, quote=quote)
 
     bu_order_data = {
         "top": str(round(top, precision)),
@@ -148,7 +156,7 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
 
     return {
         "base": f"{base}.PERP",
-        "quote": "USDT",
+        "quote": quote,
         "buOrderData": bu_order_data,
     }
 
@@ -157,14 +165,15 @@ def validar_parametros_grilla(par: str, top: float, bottom: float, row: int,
                                capital_usdt: float, leverage: int = 10,  # FIJO: 10x siempre, decisión confirmada por Juanjo
                                trend: str = "long",
                                grid_type: str = "arithmetic",
-                               extra_margin_usdt: float = 0) -> dict:
+                               extra_margin_usdt: float = 0, quote: str = "USDT") -> dict:
     """
     Llama a /futuresGrid/checkParams — NO crea una orden real.
     Sirve para validar rango, capital mínimo/máximo y estimar liquidación
     ANTES de arriesgar capital real. Usar siempre primero en pruebas.
+    23/08 — quote="BTC" para PAXG (cotiza contra BTC, no USDT).
     """
     path = "/api/v1/bot/orders/futuresGrid/checkParams"
-    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type, extra_margin_usdt)
+    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type, extra_margin_usdt, quote=quote)
     # checkParams usa nombres en snake_case dentro de buOrderData según doc
     bod = body_dict["buOrderData"]
     bod_snake = {
@@ -843,7 +852,7 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
                           capital_usdt: float, leverage: int = 10,  # FIJO: 10x siempre, decisión confirmada por Juanjo
                           trend: str = "long",
                           grid_type: str = "arithmetic",
-                          extra_margin_usdt: float = 0, sl_pct: float = None) -> dict:
+                          extra_margin_usdt: float = 0, sl_pct: float = None, quote: str = "USDT") -> dict:
     """
     Crea una grilla de futuros REAL en Pionex.
 
@@ -855,9 +864,12 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
         disponible total antes de abrir, ver gestion_riesgo.py)
     sl_pct: 23/08 (Juanjo) — SL calculado por ATR de la moneda (ver
         calcular_sl_atr), None cae al fijo SL_INICIAL_SIMPLE.
+    quote: 23/08 (Juanjo, PAXG) — "BTC" para PAXG (cotiza contra BTC, no
+        USDT) — antes estaba hardcodeado a "USDT" siempre, causando el
+        error real "top must greater than bottom" al validar PAXG.
     """
     path = "/api/v1/bot/orders/futuresGrid/create"
-    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type, extra_margin_usdt, sl_pct)
+    body_dict = _armar_body(par, top, bottom, row, capital_usdt, leverage, trend, grid_type, extra_margin_usdt, sl_pct, quote=quote)
     body_json = json.dumps(body_dict, separators=(",", ":"))
     timestamp, firma = _firmar("POST", path, "", body_json)
 

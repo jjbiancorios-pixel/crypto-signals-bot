@@ -1590,19 +1590,30 @@ def guardar_senal_simulada(r: dict, motivo_no_apertura: str = None) -> int:
     03/08 — Guarda una señal que calificó (score≥11) pero no consiguió
     lugar real. Se le hace seguimiento aparte de las reales, sin
     comprometer capital.
+
+    23/08 (Juanjo) — agregado movimiento_atr: antes las simuladas nunca
+    guardaban este dato, imposibilitando cruzar el historial simulado
+    contra ATR (a diferencia de las reales, que sí lo tienen vía
+    sombra_log). Sin reconstrucción retroactiva posible — arranca a
+    guardarse desde ahora, las simuladas de antes de hoy quedan sin este
+    dato.
     """
     import json
     conn = _conn()
     cur = conn.cursor()
+    try:
+        cur.execute("ALTER TABLE senales_simuladas ADD COLUMN movimiento_atr REAL")
+    except Exception:
+        pass
     ahora = datetime.now(TZ_ARG)
     razones_json = json.dumps(r.get("razones", []), ensure_ascii=False)
     cur.execute("""
         INSERT INTO senales_simuladas
-            (par, direccion, fecha, hora_apertura, precio_entrada, apal, score, razones, motivo_no_apertura, creado)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+            (par, direccion, fecha, hora_apertura, precio_entrada, apal, score, razones, motivo_no_apertura, movimiento_atr, creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
     """, (
         r["par"], r["direccion"], ahora.strftime("%Y%m%d"), ahora.strftime("%H:%M"),
-        r["precio"], r.get("apal", 10), r["score"], razones_json, motivo_no_apertura, ahora.isoformat(),
+        r["precio"], r.get("apal", 10), r["score"], razones_json, motivo_no_apertura, r.get("movimiento_atr"), ahora.isoformat(),
     ))
     conn.commit()
     sim_id = cur.lastrowid
@@ -3277,7 +3288,7 @@ def resultado_real_de_descartadas_por_filtro() -> dict:
     return resultado
 
 
-def resultado_por_movimiento_atr() -> list:
+def resultado_por_movimiento_atr(incluir_simuladas: bool = True) -> list:
     """
     v18 (22/08, pedido de Juanjo) — Cruza el movimiento propio en veces su
     ATR (guardado en sombra_log al momento de la señal) contra el
@@ -3286,6 +3297,13 @@ def resultado_por_movimiento_atr() -> list:
     ¿las operaciones que entraron con un movimiento fuerte en ATR (>1.5x,
     ya no es ruido) terminan mejor que las que entraron con un movimiento
     chico en ATR (<1x, más parecido a ruido)?
+
+    23/08 — incluir_simuladas=True suma también las señales SIMULADAS
+    cerradas con dato de ATR (campo agregado hoy) — da mucha más muestra
+    que solo las reales, aunque el resultado simulado no sea idéntico a
+    lo que hubiera pasado con capital real. Las simuladas de ANTES de
+    hoy no tienen este dato (se guardaba recién a partir de ahora), no
+    se pueden reconstruir retroactivamente.
     """
     conn = _conn()
     cur = conn.cursor()
@@ -3297,6 +3315,15 @@ def resultado_por_movimiento_atr() -> list:
         ORDER BY sn.id DESC
     """)
     filas = [dict(f) for f in cur.fetchall()]
+
+    if incluir_simuladas:
+        cur.execute("""
+            SELECT par, movimiento_atr, resultado_pct, motivo_cierre, direccion
+            FROM senales_simuladas
+            WHERE cerrada = 1 AND resultado_pct IS NOT NULL AND movimiento_atr IS NOT NULL
+        """)
+        filas += [dict(f) for f in cur.fetchall()]
+
     conn.close()
     return filas
 
