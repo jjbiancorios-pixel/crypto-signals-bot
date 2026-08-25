@@ -38,6 +38,38 @@ COMBOS_ACTIVAS = {
     ("C", "bajo"): [1.0, 2.0],  # 18/08: reactivado, único "bajo" activo
 }
 SENALES_ACTIVAS = {"B", "C"}
+
+# 23/08 (Juanjo) — TRADING REAL, primera vez que este cinturón arriesga
+# BTC de verdad (hasta acá, 100% modo sombra). Se promovieron las
+# combinaciones con mejor evidencia (n=27, muestra grande, no ruido):
+# B_medio_TP1/TP2 y B_alto_TP1/TP2, TODAS con sl16 (confirmado: sl16 le
+# ganó a sl10 y sl13 en las 4 comparaciones directas, sin excepción).
+# Con el apalancamiento ahora unificado a 15x (Pionex confirmó que lo
+# acepta real en PAXG/BTC — antes solo "alto" usaba 15x, "medio" 10x),
+# B_medio y B_alto quedan CON LOS MISMOS PARÁMETROS — abrir ambos
+# duplicaría la misma apuesta, no diversifica. Quedan 2 combos reales
+# distintos: TP1 y TP2, ambos a 15x/sl16.
+#
+# Lado ganancia: trailing ESCALONADO de v18 (mismo esquema que el
+# cinturón principal: activa a partir de PAXG_UMBRAL_TRAILING%,
+# retrocede 50%/30%/20% según el pico — ver gestion_riesgo.
+# _calcular_piso_trailing_escalonado, se reusa tal cual).
+# Lado pérdida: SL PROPIO de PAXG (-16%, sl16), NO el cálculo por ATR
+# del cinturón principal — decisión explícita: los sl10/13/16 de PAXG
+# ya están validados con datos reales propios de este activo, mientras
+# que el ATR fue diseñado para altcoins, dinámica de volatilidad
+# distinta a un ratio oro/BTC.
+PAXG_TRADING_REAL_ACTIVO = True  # interruptor simple: False = solo modo sombra, como hasta ahora
+PAXG_APALANCAMIENTO_REAL = 15
+PAXG_SL_REAL_PCT = -16.0
+PAXG_COMBOS_REALES = [1.0, 2.0]  # TP1 y TP2, ambos con los parámetros de arriba
+PAXG_UMBRAL_TRAILING = 4.0  # mismo umbral que el cinturón principal — a partir de acá se considera tendencia real, no ruido
+# 23/08 — capital en BTC: PLACEHOLDER hasta que Juanjo confirme el monto
+# real tras comprar el BTC. NO OPERAR CON ESTE VALOR SIN ANTES
+# ACTUALIZARLO — ver /paxg_capital_btc para fijarlo real antes de activar.
+PAXG_CAPITAL_BTC_INICIAL = None  # se carga desde db.obtener_capital_paxg_btc(), no se usa este valor directo
+PAXG_PCT_CAPITAL_POR_OPERACION = 0.05  # 5% del capital BTC total por operación, "por ahora" (Juanjo: más adelante subirá el %)
+
 STOP_LOSS_PCT = -20.0  # SL "original" — sigue siendo el que usa C_bajo (5x), no participa del experimento de abajo
 # 18/08 (Opción 2, 3 variantes) — SL más ajustado, corriendo en PARALELO
 # al original, aplicado SOLO a las combinaciones de riesgo medio/alto
@@ -224,6 +256,13 @@ def abrir_lote(senal_tipo, direccion, precio_entrada):
     riesgo medio/alto, cada combinación se abre 3 veces (una por cada
     variante de SL de VARIANTES_SL_MEDIO_ALTO) — riesgo bajo (solo
     C_bajo) usa el STOP_LOSS_PCT original, sin variantes.
+
+    23/08 (Juanjo) — además de la simulación (que sigue corriendo igual,
+    sin cambios), si la señal es "B" y PAXG_TRADING_REAL_ACTIVO, intenta
+    abrir posiciones REALES para los 2 combos confirmados (TP1/TP2,
+    ambos 15x/sl16). No reemplaza la simulación — corren en paralelo,
+    la simulación sigue siendo la referencia de las 66 combinaciones
+    completas.
     """
     for (senal, riesgo), tps in COMBOS_ACTIVAS.items():
         if senal != senal_tipo:
@@ -237,6 +276,50 @@ def abrir_lote(senal_tipo, direccion, precio_entrada):
                 for etiqueta_sl, valor_sl in VARIANTES_SL_MEDIO_ALTO.items():
                     combinacion = f"{senal_tipo}_{riesgo}_TP{tp:g}_{etiqueta_sl}"
                     db.abrir_paxg_simulacion(combinacion, senal_tipo, riesgo, apal, tp, direccion, precio_entrada, sl_pct=valor_sl)
+
+    if senal_tipo == "B" and PAXG_TRADING_REAL_ACTIVO:
+        _abrir_paxg_real(direccion, precio_entrada)
+
+
+def _abrir_paxg_real(direccion: str, precio_entrada: float):
+    """
+    23/08 (Juanjo) — Apertura REAL de PAXG/BTC. Por cada TP en
+    PAXG_COMBOS_REALES (1.0, 2.0), abre una grilla real independiente,
+    con quote="BTC" (fix del 23/08 — antes hardcodeado a USDT, rompía
+    la validación del rango para este par), 15x, SL nativo -16%.
+
+    Capital: exige que ya se haya cargado PAXG_CAPITAL_BTC vía
+    /paxg_capital_btc — si no, NO abre nada (mejor no operar que operar
+    con un placeholder equivocado, es plata real).
+    """
+    capital_btc_total = db.obtener_capital_paxg_btc()
+    if capital_btc_total is None:
+        print("⚠️ PAXG real: no se abrió nada — falta cargar el capital en BTC con /paxg_capital_btc")
+        return
+
+    capital_btc_operacion = round(capital_btc_total * PAXG_PCT_CAPITAL_POR_OPERACION, 8)
+    trend = "long" if direccion == "LARGO" else "short"
+
+    for tp in PAXG_COMBOS_REALES:
+        top = round(precio_entrada * 1.03, 6)
+        bottom = round(precio_entrada * 0.97, 6)
+        try:
+            resp = pionex_api.crear_grilla_futuros(
+                par="PAXG", top=top, bottom=bottom, row=67,
+                capital_usdt=capital_btc_operacion,  # nombre del parámetro genérico, acá representa BTC (quote=BTC)
+                leverage=PAXG_APALANCAMIENTO_REAL, trend=trend, extra_margin_usdt=0,
+                sl_pct=PAXG_SL_REAL_PCT, quote="BTC",
+            )
+            bu_order_id = resp.get("data", {}).get("buOrderId")
+            if bu_order_id:
+                combinacion = f"B_real_TP{tp:g}_sl16_15x"
+                db.guardar_senal_paxg_real(combinacion, "B", PAXG_APALANCAMIENTO_REAL, tp, direccion,
+                                            precio_entrada, PAXG_SL_REAL_PCT, bu_order_id, capital_btc_operacion)
+                print(f"✅ PAXG real abierta: {combinacion} — {capital_btc_operacion} BTC, bu_order_id={bu_order_id}")
+            else:
+                print(f"⚠️ PAXG real: Pionex no devolvió buOrderId para TP{tp:g} — {resp}")
+        except Exception as e:
+            print(f"⚠️ PAXG real: falló la apertura para TP{tp:g} — {e}")
 
 
 def _evaluar_factores_tecnicos_paxg(direccion: str) -> dict:
@@ -387,3 +470,44 @@ def analizar_y_simular():
                 db.cerrar_paxg_simulacion(combo["id"], resultado, motivo="cierre_intradia_forzado")
         except Exception:
             pass
+
+
+def monitorear_paxg_real():
+    """
+    23/08 (Juanjo) — Monitoreo de las posiciones REALES de PAXG.
+    Lado ganancia: trailing ESCALONADO de v18 (reusa gestion_riesgo.
+    _calcular_piso_trailing_escalonado tal cual, mismo esquema que el
+    cinturón principal — activa a partir de PAXG_UMBRAL_TRAILING%,
+    retrocede 50%/30%/20% según el pico).
+    Lado pérdida: NO se toca — el SL nativo (-16%, sl16) protege solo,
+    fijado en Pionex desde la apertura, decisión explícita de Juanjo de
+    no aplicar el cálculo por ATR acá.
+    """
+    import gestion_riesgo
+    abiertas = db.operaciones_paxg_reales_abiertas()
+    for op in abiertas:
+        try:
+            desglose = pionex_api.calcular_resultado_desglosado(
+                op["bu_order_id"], par="PAXGBTC", capital_total_real=op["capital_btc_operacion"]
+            )
+            resultado_actual = desglose["total_pct"] if desglose else None
+        except Exception as e:
+            print(f"⚠️ PAXG real {op['combinacion']}: falló la consulta de resultado — {e}")
+            continue
+        if resultado_actual is None:
+            continue
+
+        mejor = op.get("mejor_resultado_pct")
+        if mejor is None or resultado_actual > mejor:
+            db.actualizar_mejor_resultado_paxg_real(op["id"], resultado_actual)
+            mejor = max(resultado_actual, mejor) if mejor is not None else resultado_actual
+
+        if mejor >= PAXG_UMBRAL_TRAILING:
+            piso = gestion_riesgo._calcular_piso_trailing_escalonado(mejor)
+            if resultado_actual <= piso:
+                try:
+                    pionex_api.cerrar_grilla_futuros(op["bu_order_id"], nota=f"PAXG real: trailing — pico {mejor:+.2f}%, piso {piso:+.2f}%")
+                    db.cerrar_senal_paxg_real(op["id"], resultado_actual, motivo="trailing_escalonado")
+                    print(f"✅ PAXG real cerrada por trailing: {op['combinacion']} — pico {mejor:+.2f}%, cerrada en {resultado_actual:+.2f}%")
+                except Exception as e:
+                    print(f"⚠️ PAXG real {op['combinacion']}: tocó el trailing pero falló el cierre — {e} — REVISAR YA")

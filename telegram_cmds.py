@@ -449,6 +449,25 @@ def _cmd_simuladas() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_paxg_capital_btc(args: list) -> str:
+    """
+    23/08 (Juanjo) — Fija el capital REAL en BTC para el trading real de
+    PAXG (separado del capital USDT del cinturón principal). Sin esto
+    cargado, _abrir_paxg_real() no abre nada — mejor no operar que
+    operar con un placeholder.
+    Uso: /paxg_capital_btc MONTO_BTC
+    """
+    if not args:
+        actual = db.obtener_capital_paxg_btc()
+        return f"Capital PAXG actual: {actual} BTC" if actual is not None else "⚠️ Todavía no se cargó ningún capital para PAXG. Uso: /paxg_capital_btc 0.003"
+    monto = _parse_float(args[0])
+    if monto is None or monto <= 0:
+        return "⚠️ El monto tiene que ser un número positivo. Ej: /paxg_capital_btc 0.003"
+    db.guardar_capital_paxg_btc(monto)
+    por_operacion = round(monto * 0.05, 8)
+    return f"✅ Capital PAXG fijado: {monto} BTC. Por operación (5%): {por_operacion} BTC."
+
+
 def _cmd_paxg() -> str:
     """
     04/08 — Resumen del cinturón separado PAXG/BTC (modo sombra, 24
@@ -1498,6 +1517,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_rendimiento()
     elif cmd == "/simuladas":
         return _cmd_simuladas()
+    elif cmd == "/paxg_capital_btc":
+        return _cmd_paxg_capital_btc(args)
     elif cmd == "/paxg":
         return _cmd_paxg()
     elif cmd == "/paxg_motivos":
@@ -1609,6 +1630,9 @@ def procesar_comando(texto: str) -> str:
             "/paxg\n"
             "  🥇 Cinturón PAXG/BTC en modo sombra — ranking de las 24\n"
             "  combinaciones (señal x riesgo x TP) probadas en paralelo.\n\n"
+            "/paxg_capital_btc [MONTO]\n"
+            "  💰 Fija el capital REAL en BTC para PAXG (trading real,\n"
+            "  separado del USDT). Sin esto, no abre nada. Ej: /paxg_capital_btc 0.003\n\n"
             "/paxg_motivos\n"
             "  🔍 Desglose de cierres de PAXG por motivo (tp/trailing/SL) —\n"
             "  para verificar si el fix de trailing ya está aplicándose.\n\n"

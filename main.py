@@ -1738,6 +1738,15 @@ def main():
     def _loop_monitoreo_1min():
         while True:
             _monitorear()
+            # 23/08 (Juanjo) — monitoreo del trading REAL de PAXG, mismo
+            # hilo que el resto (independiente del escaneo de 94 pares,
+            # mismo motivo que arriba). PAXG no necesita chequeo cada
+            # 2seg como el cinturón principal (Juanjo: "estas operaciones
+            # duran más") — 1 minuto es un ritmo razonable.
+            try:
+                paxg_bot.monitorear_paxg_real()
+            except Exception as e:
+                print(f"Error en monitoreo real de PAXG: {e}")
             time.sleep(60)
     threading.Thread(target=_loop_monitoreo_1min, daemon=True).start()
 

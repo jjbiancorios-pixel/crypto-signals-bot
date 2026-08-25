@@ -3540,3 +3540,128 @@ def detalle_simuladas_por_filtro(filtro: str = "filtro_duro_adx_gate", limite: i
     filas = [dict(f) for f in cur.fetchall()]
     conn.close()
     return filas
+
+
+def guardar_capital_paxg_btc(capital_btc: float):
+    """
+    23/08 (Juanjo) — Capital REAL en BTC destinado al cinturón PAXG,
+    SEPARADO del capital USDT del cinturón principal. Se fija a mano
+    (comando /paxg_capital_btc) porque viene de otra fuente (ahorro
+    aparte), no del balance que ya consultamos vía Pionex para el
+    cinturón principal.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS paxg_capital_btc (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            capital_btc REAL NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+    cur.execute("INSERT INTO paxg_capital_btc (capital_btc, creado) VALUES (?, ?)",
+                (capital_btc, datetime.now(TZ_ARG).isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def obtener_capital_paxg_btc() -> float:
+    """23/08 — Último capital en BTC fijado para PAXG, o None si nunca se cargó."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS paxg_capital_btc (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            capital_btc REAL NOT NULL,
+            creado TEXT NOT NULL
+        )
+    """)
+    cur.execute("SELECT capital_btc FROM paxg_capital_btc ORDER BY id DESC LIMIT 1")
+    fila = cur.fetchone()
+    conn.close()
+    return fila["capital_btc"] if fila else None
+
+
+def guardar_senal_paxg_real(combinacion: str, senal_tipo: str, apal: int, tp: float,
+                             direccion: str, precio_entrada: float, sl_pct: float,
+                             bu_order_id: str, capital_btc_operacion: float) -> int:
+    """23/08 — Registro de una posición REAL de PAXG (separado de paxg_simulaciones, que sigue siendo 100% sombra)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS paxg_senales_reales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            combinacion TEXT NOT NULL,
+            senal_tipo TEXT NOT NULL,
+            apal INTEGER NOT NULL,
+            tp REAL NOT NULL,
+            direccion TEXT NOT NULL,
+            precio_entrada REAL NOT NULL,
+            sl_pct REAL NOT NULL,
+            bu_order_id TEXT NOT NULL,
+            capital_btc_operacion REAL NOT NULL,
+            mejor_resultado_pct REAL,
+            cerrado INTEGER DEFAULT 0,
+            resultado_pct REAL,
+            motivo_cierre TEXT,
+            creado TEXT NOT NULL,
+            cerrado_en TEXT
+        )
+    """)
+    ahora = datetime.now(TZ_ARG)
+    cur.execute("""
+        INSERT INTO paxg_senales_reales
+            (combinacion, senal_tipo, apal, tp, direccion, precio_entrada, sl_pct, bu_order_id, capital_btc_operacion, creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (combinacion, senal_tipo, apal, tp, direccion, precio_entrada, sl_pct, bu_order_id, capital_btc_operacion, ahora.isoformat()))
+    conn.commit()
+    senal_id = cur.lastrowid
+    conn.close()
+    return senal_id
+
+
+def operaciones_paxg_reales_abiertas() -> list:
+    """23/08 — Posiciones reales de PAXG todavía abiertas."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS paxg_senales_reales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, combinacion TEXT, senal_tipo TEXT, apal INTEGER,
+            tp REAL, direccion TEXT, precio_entrada REAL, sl_pct REAL, bu_order_id TEXT,
+            capital_btc_operacion REAL, mejor_resultado_pct REAL, cerrado INTEGER DEFAULT 0,
+            resultado_pct REAL, motivo_cierre TEXT, creado TEXT, cerrado_en TEXT
+        )
+    """)
+    cur.execute("SELECT * FROM paxg_senales_reales WHERE cerrado = 0")
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    return filas
+
+
+def actualizar_mejor_resultado_paxg_real(senal_id: int, resultado_actual: float):
+    """23/08 — Igual patrón que actualizar_mejor_resultado del cinturón principal (MAX, nunca baja)."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE paxg_senales_reales
+        SET mejor_resultado_pct = CASE
+            WHEN mejor_resultado_pct IS NULL OR ? > mejor_resultado_pct THEN ?
+            ELSE mejor_resultado_pct
+        END
+        WHERE id = ?
+    """, (resultado_actual, resultado_actual, senal_id))
+    conn.commit()
+    conn.close()
+
+
+def cerrar_senal_paxg_real(senal_id: int, resultado_pct: float, motivo: str):
+    """23/08 — Cierra una posición real de PAXG."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE paxg_senales_reales
+        SET cerrado = 1, resultado_pct = ?, motivo_cierre = ?, cerrado_en = ?
+        WHERE id = ?
+    """, (resultado_pct, motivo, datetime.now(TZ_ARG).isoformat(), senal_id))
+    conn.commit()
+    conn.close()
