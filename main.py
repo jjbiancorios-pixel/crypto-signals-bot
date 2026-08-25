@@ -812,6 +812,14 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     # CUÁNTOS candidatos que llegaron hasta acá NO tenían el ciclo
     # anterior — es el número que permite ver cuánto reduce esto la
     # cantidad de señales, tal como pidió Juanjo.
+    # 24/08 (Juanjo) — persistencia REVERTIDA a modo sombra: exigir que
+    # la MISMA señal sobreviva 2 ciclos seguidos, apilado sobre ADX +
+    # alineación 4h + volumen ya activos, resultó demasiado restrictivo
+    # en conjunto — varios días sin ninguna candidata, en distintos
+    # estados de BTC (LATERAL, SUBIO_RANGEA, BAJO_RANGEA), descartando
+    # la hipótesis de que fuera solo "BTC quieto". Sigue midiendo (ver
+    # /filtros_duros, categoría "persistencia") para decidir más
+    # adelante con más datos si conviene reactivarlo, pero ya NO bloquea.
     ya_persistio = db.candidato_persistio(par, direccion)
     db.guardar_candidato_pendiente(par, direccion)
     if not ya_persistio:
@@ -820,9 +828,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
             {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones, "movimiento_atr": sombra_movimiento_atr},
             motivo_no_apertura="filtro_duro_persistencia"
         )
-        return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
-                "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
-                "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral}
+        # sin bloqueo real: ya no se descarta la señal, sigue de largo
 
     return {
         "par":par,"precio":precio,"score":score,"score_max":16,"pct":pct,
