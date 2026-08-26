@@ -722,8 +722,23 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         e20_4h=calc_ema(df4h["close"],20)
         sombra_multi_tf = (precio>e20_4h) if es_largo else (precio<e20_4h)
     else:
-        sombra_multi_tf = False  # sin dato de 4h disponible -> no aprueba
-    sombra_adx_gate = adx15["adx"]>25 and (
+        # 24/08 (FIX) — antes esto bloqueaba directo (False) cuando
+        # fallaba la consulta de 4h por CUALQUIER motivo — incluidos
+        # errores de red que ya vimos en los logs (Bybit 403, etc.). Un
+        # fallo de conexión no debería descartar una señal técnicamente
+        # buena. Ahora se trata como "sin dato" (None) — no aprueba pero
+        # tampoco cuenta como una falla real del par, se distingue en el
+        # log de bloqueo.
+        sombra_multi_tf = None
+    # 24/08 (Juanjo, investigación exhaustiva) — ADX bajado de 25 a 20:
+    # con 25, bloqueaba ~90% de todos los candidatos con score>=11 de
+    # forma sostenida, en TODOS los estados de BTC (LATERAL, SUBIO_
+    # RANGEA, BAJO_RANGEA por igual) — el estado de BTC no determina el
+    # ADX de cada moneda individual, así que la falta casi total de
+    # candidatas no era "BTC quieto", era el umbral en sí. 20 sigue
+    # exigiendo tendencia real (no es 0), pero menos extremo para velas
+    # de 15 minutos, más ruidosas que timeframes mayores.
+    sombra_adx_gate = adx15["adx"]>20 and (
         (adx15["plus_di"]>adx15["minus_di"] and es_largo) or
         (adx15["minus_di"]>adx15["plus_di"] and not es_largo)
     )
@@ -777,7 +792,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         return {"no_califico": True, "par": par, "score": score, "direccion_candidata": direccion,
                 "razones": razones, "btc_estado": btc.get("estado"), "precio": precio,
                 "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral}
-    if not sombra_multi_tf:
+    if sombra_multi_tf is False:
         db.guardar_bloqueo_filtro_duro(par, "multi_tf", score, direccion, detalle_sombra_completo)
         db.guardar_senal_simulada(
             {"par": par, "direccion": direccion, "precio": precio, "apal": 10, "score": score, "razones": razones, "movimiento_atr": sombra_movimiento_atr},
