@@ -897,8 +897,16 @@ def calcular_sl_atr(atr_pct: float, multiplo: float = 3.0, piso_minimo: float = 
     /resultado_atr una vez que haya suficientes cierres reales con este
     esquema activo).
 
-    Devuelve el SL como número NEGATIVO en % (ej. -15.0, -22.5), listo
+    26/08 (Juanjo, investigación BOT_INTERNAL_ERROR) — redondeado a
+    ENTERO (antes 2 decimales, ej. -18.45%) — prueba para descartar si
+    valores no redondos en el campo lossStop contribuían a los errores
+    internos de Pionex (INJ/NEAR/ZRX/ENS). NO toca el trailing — son
+    sistemas completamente separados (el trailing vive en
+    gestion_riesgo._calcular_piso_trailing_escalonado, opera sobre el
+    resultado en tiempo real, nunca lee este valor).
+
+    Devuelve el SL como número NEGATIVO en % (ej. -15.0, -22.0), listo
     para pasar a crear_grilla_futuros(sl_pct=...).
     """
     ancho = max(atr_pct * multiplo, piso_minimo)
-    return round(-ancho, 2)
+    return float(-round(ancho))
