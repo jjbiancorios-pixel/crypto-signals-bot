@@ -128,7 +128,7 @@ def _velas_binance(par, tf, n):
 
 
 def get_velas(par, tf, n=100):
-    for f in (_velas_bybit, _velas_binance):
+    for f in (_velas_binance, _velas_bybit):
         try:
             df = f(par, tf, n)
             if df is not None and len(df) >= 20: return df
@@ -277,9 +277,6 @@ def abrir_lote(senal_tipo, direccion, precio_entrada):
                     combinacion = f"{senal_tipo}_{riesgo}_TP{tp:g}_{etiqueta_sl}"
                     db.abrir_paxg_simulacion(combinacion, senal_tipo, riesgo, apal, tp, direccion, precio_entrada, sl_pct=valor_sl)
 
-    if senal_tipo == "B" and PAXG_TRADING_REAL_ACTIVO:
-        _abrir_paxg_real(direccion, precio_entrada)
-
 
 def _abrir_paxg_real(direccion: str, precio_entrada: float):
     """
@@ -291,7 +288,23 @@ def _abrir_paxg_real(direccion: str, precio_entrada: float):
     Capital: exige que ya se haya cargado PAXG_CAPITAL_BTC vía
     /paxg_capital_btc — si no, NO abre nada (mejor no operar que operar
     con un placeholder equivocado, es plata real).
+
+    26/08 (Juanjo) — 2 cambios importantes:
+    (1) Candado PROPIO: antes dependía de que no hubiera combos
+    SIMULADOS abiertos — con 24 combinaciones de sombra siempre
+    corriendo, esto bloqueaba la apertura real casi todo el tiempo sin
+    que nadie lo notara. Ahora chequea SUS PROPIAS posiciones reales
+    abiertas (paxg_senales_reales), totalmente independiente de la
+    simulación.
+    (2) Máximo 1 apertura real por ronda: aunque la señal B calificara
+    para TP1 y TP2 a la vez, solo se abre una — se corta con el primer
+    éxito, no se intentan los 2 combos en la misma pasada.
     """
+    ya_abiertas = db.operaciones_paxg_reales_abiertas()
+    if len(ya_abiertas) > 0:
+        print(f"ℹ️ PAXG real: ya hay {len(ya_abiertas)} posición(es) real(es) abierta(s) — no se abre otra esta ronda.")
+        return
+
     capital_btc_total = db.obtener_capital_paxg_btc()
     if capital_btc_total is None:
         print("⚠️ PAXG real: no se abrió nada — falta cargar el capital en BTC con /paxg_capital_btc")
@@ -316,6 +329,7 @@ def _abrir_paxg_real(direccion: str, precio_entrada: float):
                 db.guardar_senal_paxg_real(combinacion, "B", PAXG_APALANCAMIENTO_REAL, tp, direccion,
                                             precio_entrada, PAXG_SL_REAL_PCT, bu_order_id, capital_btc_operacion)
                 print(f"✅ PAXG real abierta: {combinacion} — {capital_btc_operacion} BTC, bu_order_id={bu_order_id}")
+                return  # 26/08: máximo 1 por ronda — corta apenas abre una, no intenta el otro TP
             else:
                 print(f"⚠️ PAXG real: Pionex no devolvió buOrderId para TP{tp:g} — {resp}")
         except Exception as e:
@@ -412,6 +426,17 @@ def analizar_y_simular():
             continue
         if direccion and not db.paxg_hay_combos_abiertas_de(tipo):
             abrir_lote(tipo, direccion, precio_paxg_actual)
+
+    # 26/08 (Juanjo) — lo que pasa en modo SOMBRA no debe afectar el
+    # trading REAL: antes, _abrir_paxg_real vivía DENTRO de abrir_lote,
+    # que solo se llamaba si NO había combos SIMULADOS abiertos de ese
+    # tipo — con 24 combinaciones simuladas siempre corriendo, "B" casi
+    # siempre tenía algo abierto, bloqueando sin querer la apertura real
+    # (nunca llegó a intentarse en la práctica). Ahora es independiente:
+    # se llama siempre que la señal B dispara, sin importar el estado de
+    # la simulación.
+    if senales.get("B") and PAXG_TRADING_REAL_ACTIVO:
+        _abrir_paxg_real(senales["B"], precio_paxg_actual)
 
     # 11/08 — Comisión real de Pionex Futuros (Maker 0.02% / Taker 0.05%,
     # confirmado). Se usa una estimación conservadora ida+vuelta de 0.10%

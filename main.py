@@ -164,7 +164,7 @@ def _velas_binance(par, tf, n):
 
 def get_velas(par, tf, n=100, verbose=False):
     """17/08: mismo agregado que get_precio() — ver ese docstring."""
-    for f in (_velas_bybit, _velas_okx, _velas_binance):
+    for f in (_velas_binance, _velas_okx, _velas_bybit):
         nombre_fuente = f.__name__.replace("_velas_", "")
         try:
             df = f(par, tf, n)
@@ -210,7 +210,7 @@ def get_precio(par, verbose=False):
     real, sin forma de reconstruir después qué fuente dio el dato malo.
     Con verbose=True, loguea cada intento (fuente + resultado).
     """
-    for f in (_precio_bybit, _precio_okx, _precio_binance):
+    for f in (_precio_binance, _precio_okx, _precio_bybit):
         nombre_fuente = f.__name__.replace("_precio_", "")
         try:
             p = f(par)
@@ -239,7 +239,7 @@ def comparar_fuentes_precio(par: str) -> dict:
     da un valor raro comparada con Pionex) o algo más general.
     """
     resultado = {}
-    for f in (_precio_bybit, _precio_okx, _precio_binance):
+    for f in (_precio_binance, _precio_okx, _precio_bybit):
         nombre = f.__name__.replace("_precio_", "")
         try:
             resultado[nombre] = f(par)
@@ -735,10 +735,16 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     # forma sostenida, en TODOS los estados de BTC (LATERAL, SUBIO_
     # RANGEA, BAJO_RANGEA por igual) — el estado de BTC no determina el
     # ADX de cada moneda individual, así que la falta casi total de
-    # candidatas no era "BTC quieto", era el umbral en sí. 20 sigue
-    # exigiendo tendencia real (no es 0), pero menos extremo para velas
-    # de 15 minutos, más ruidosas que timeframes mayores.
-    sombra_adx_gate = adx15["adx"]>20 and (
+    # candidatas no era "BTC quieto", era el umbral en sí.
+    #
+    # 26/08 (Juanjo, Opción A) — bajado de 20 a 15: confirmado que ADX
+    # seguía siendo el bloqueador dominante (~90%+ de los descartes) aun
+    # en 20. Probar unas horas — si sigue habiendo pocas o ninguna
+    # recomendación, Juanjo indicó escalar a Opción B (sacar la
+    # exigencia de que el DI confirme la dirección exacta, dejar solo la
+    # fuerza de tendencia) — NO implementar B todavía, solo si se
+    # confirma que A no alcanzó.
+    sombra_adx_gate = adx15["adx"]>15 and (
         (adx15["plus_di"]>adx15["minus_di"] and es_largo) or
         (adx15["minus_di"]>adx15["plus_di"] and not es_largo)
     )
@@ -1018,9 +1024,15 @@ def _abrir_grilla_automatica(r: dict, check: dict):
     # 17/08 — Reintento automático ante BOT_INTERNAL_ERROR de Pionex (caso
     # real: INJUSDT, señal de score 11/16 perdida por completo porque
     # Pionex devolvió un error interno puntual y transitorio del lado de
-    # ELLOS, no un problema de nuestros datos). 2 reintentos más, con una
-    # pausa corta entre cada uno, antes de dar la señal por perdida.
-    MAX_INTENTOS_APERTURA = 3
+    # ELLOS, no un problema de nuestros datos).
+    # 25/08 (Juanjo, investigación) — subido de 3 a 5 intentos, con
+    # espera CRECIENTE (3s, 6s, 12s, 24s) en vez de 3s fija siempre.
+    # Motivo: el mismo patrón se repitió con 3 pares distintos (INJ,
+    # NEAR, ZRX) — las 3 veces, los 3 intentos con 3s fallaron igual,
+    # sugiriendo que el problema del lado de Pionex a veces necesita más
+    # tiempo para despejarse, no solo más intentos rápidos seguidos.
+    MAX_INTENTOS_APERTURA = 5
+    ESPERAS_ENTRE_INTENTOS = [3, 6, 12, 24]  # segundos, creciente
     for intento in range(1, MAX_INTENTOS_APERTURA + 1):
         try:
             # Antes se usaba row=67 fijo, ignorando el cálculo propio de
@@ -1077,14 +1089,16 @@ def _abrir_grilla_automatica(r: dict, check: dict):
 
             codigo_error = resp.get("code", "")
             if codigo_error == "BOT_INTERNAL_ERROR" and intento < MAX_INTENTOS_APERTURA:
-                print(f"⚠️ {r['par']}: BOT_INTERNAL_ERROR de Pionex (intento {intento}/{MAX_INTENTOS_APERTURA}), reintentando en 3s...")
-                time.sleep(3)
+                espera = ESPERAS_ENTRE_INTENTOS[intento - 1]
+                print(f"⚠️ {r['par']}: BOT_INTERNAL_ERROR de Pionex (intento {intento}/{MAX_INTENTOS_APERTURA}), reintentando en {espera}s...")
+                time.sleep(espera)
                 continue
             return None, f"⚠️ Pionex no devolvió buOrderId tras {intento} intento(s): {resp}"
         except Exception as e:
             if intento < MAX_INTENTOS_APERTURA:
-                print(f"⚠️ {r['par']}: error al abrir grilla (intento {intento}/{MAX_INTENTOS_APERTURA}) — {e}, reintentando en 3s...")
-                time.sleep(3)
+                espera = ESPERAS_ENTRE_INTENTOS[intento - 1]
+                print(f"⚠️ {r['par']}: error al abrir grilla (intento {intento}/{MAX_INTENTOS_APERTURA}) — {e}, reintentando en {espera}s...")
+                time.sleep(espera)
                 continue
             return None, f"⚠️ Error al abrir grilla automática tras {intento} intento(s): {e}"
 
