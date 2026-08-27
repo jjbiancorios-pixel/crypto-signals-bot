@@ -910,6 +910,23 @@ def _cmd_near_miss() -> str:
     return "\n".join(lineas)
 
 
+def _cmd_detalle_extremos() -> str:
+    """
+    26/08 (Juanjo) — Encuentra los casos con resultado más extremo entre
+    las señales simuladas por falta de lugar — para confirmar si los
+    promedios de +101%/+131% de /motivo_no_apertura son reales o un dato
+    roto (mismo patrón de XMR encontrado antes).
+    """
+    filas = db.detalle_extremos_motivo_no_apertura()
+    if not filas:
+        return "📊 Sin datos todavía."
+    lineas = ["📊 <b>Casos más extremos — señales sin lugar</b>\n"]
+    for f in filas:
+        sospechoso = " ⚠️ SOSPECHOSO" if abs(f["resultado_pct"]) > 100 else ""
+        lineas.append(f"{f['par']}: {f['resultado_pct']:+.2f}% | {f['motivo_cierre']} | {f['motivo_no_apertura'][:40]} | {f['fecha']} {f['hora_apertura']}→{f['hora_cierre']}{sospechoso}")
+    return "\n".join(lineas)
+
+
 def _cmd_motivo_no_apertura() -> str:
     """
     18/08 — Analiza los datos YA acumulados desde el 03/08 (no espera a
@@ -1458,7 +1475,15 @@ def _cmd_escanear(args: list) -> str:
     for par in bot_main.PARES:
         try:
             r = bot_main.analizar_par(par, btc)
-            if r:
+            # 26/08 (FIX) — antes "if r:" trataba cualquier diccionario
+            # como candidato válido, incluidos los {"no_califico": True}
+            # que devuelven los filtros duros (ADX/alineación/volumen/
+            # persistencia) desde que se agregaron — un diccionario
+            # SIEMPRE es verdadero en Python, aunque diga "no calificó".
+            # Esto rompía el comando: explotaba con KeyError al intentar
+            # mostrar rango_bajo/rango_alto de un descarte, que no tiene
+            # esos campos. Mismo chequeo que ya usa generar_alertas.
+            if r and not r.get("no_califico"):
                 resultados.append(r)
         except Exception:
             errores += 1
@@ -1551,6 +1576,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_distribucion_scores()
     elif cmd == "/near_miss":
         return _cmd_near_miss()
+    elif cmd == "/detalle_extremos":
+        return _cmd_detalle_extremos()
     elif cmd == "/motivo_no_apertura":
         return _cmd_motivo_no_apertura()
     elif cmd == "/comparar_bloqueadas":
@@ -1682,6 +1709,9 @@ def procesar_comando(texto: str) -> str:
             "/motivo_no_apertura\n"
             "  📊 Señales que SÍ calificaron pero se quedaron sin lugar,\n"
             "  con datos ya acumulados desde el 03/08 — costo de oportunidad.\n\n"
+            "/detalle_extremos\n"
+            "  📊 Casos más extremos entre las señales sin lugar — para\n"
+            "  confirmar si un promedio raro es un dato roto, no real.\n\n"
             "/comparar_bloqueadas\n"
             "  📊 Rendimiento real vs. bloqueadas por falta de lugar, lado\n"
             "  a lado, mismo período — con lectura automática incluida.\n\n"

@@ -229,12 +229,19 @@ def evaluar_senales(datos_paxg, datos_btc_estado, tendencia_oro):
     else:
         senales["A"] = None
 
-    # B) Tendencia: cruce EMA9/EMA21 + ADX>25, confirmado por DI+/DI-
-    if (datos_paxg["ema9"] > datos_paxg["ema21"] and datos_paxg["adx"] > 25
-            and datos_paxg["plus_di"] > datos_paxg["minus_di"]):
+    # B) Tendencia: cruce EMA9/EMA21 + ADX>15, SIN exigir que el DI
+    # confirme la dirección exacta.
+    # 26/08 (Juanjo) — mismo criterio (Opción B) ya aplicado al cinturón
+    # principal el mismo día: ADX>25 fijo bloqueaba casi toda oportunidad
+    # de la señal B (la única con trading real en PAXG) — el candado
+    # compartido con la simulación que arreglamos el 26/08 no servía de
+    # nada si la señal casi nunca llegaba a dispararse. Bajado a >15,
+    # igual que el principal, y sacada la exigencia de que el DI
+    # confirme la dirección exacta (el cruce de EMA9/21 ya da la
+    # dirección, el DI+/DI- pedía lo mismo dos veces).
+    if datos_paxg["ema9"] > datos_paxg["ema21"] and datos_paxg["adx"] > 15:
         senales["B"] = "LARGO"
-    elif (datos_paxg["ema9"] < datos_paxg["ema21"] and datos_paxg["adx"] > 25
-            and datos_paxg["minus_di"] > datos_paxg["plus_di"]):
+    elif datos_paxg["ema9"] < datos_paxg["ema21"] and datos_paxg["adx"] > 15:
         senales["B"] = "CORTO"
     else:
         senales["B"] = None

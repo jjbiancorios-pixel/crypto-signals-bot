@@ -3676,3 +3676,27 @@ def cerrar_senal_paxg_real(senal_id: int, resultado_pct: float, motivo: str):
     """, (resultado_pct, motivo, datetime.now(TZ_ARG).isoformat(), senal_id))
     conn.commit()
     conn.close()
+
+
+def detalle_extremos_motivo_no_apertura(limite: int = 15) -> list:
+    """
+    26/08 (Juanjo) — Los promedios de resumen_motivo_no_apertura dieron
+    números imposibles como típicos (101%, 131% de resultado promedio)
+    — matemáticamente esto solo se explica por casos extremos rotos
+    (mismo patrón que encontramos antes con XMR: +2560% por un dato de
+    precio erróneo) arrastrando el promedio. Lista los casos con mayor
+    magnitud, sin importar la categoría, para encontrarlos.
+    """
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT par, motivo_no_apertura, resultado_pct, motivo_cierre, fecha, hora_apertura, hora_cierre
+        FROM senales_simuladas
+        WHERE motivo_no_apertura IS NOT NULL AND motivo_no_apertura NOT LIKE 'score_bajo_%'
+          AND cerrada = 1 AND resultado_pct IS NOT NULL
+        ORDER BY ABS(resultado_pct) DESC
+        LIMIT ?
+    """, (limite,))
+    filas = [dict(f) for f in cur.fetchall()]
+    conn.close()
+    return filas
