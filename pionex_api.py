@@ -20,6 +20,7 @@ import hmac
 import hashlib
 import json
 import requests
+import threading
 
 PIONEX_BASE_URL = "https://api.pionex.com"
 # 20/08 — comisión de cierre (taker, futuros: 0.05% confirmado en varias
@@ -41,6 +42,20 @@ PIONEX_API_SECRET = os.environ.get("PIONEX_API_SECRET", "")
 # momento más crítico (el cierre real del trailing). Con una sesión
 # persistente, la conexión queda "caliente" entre llamadas.
 _session = requests.Session()
+
+# 27/08 (Juanjo, documento de diagnóstico BOT_INTERNAL_ERROR) — candado
+# global para SERIALIZAR toda escritura hacia Pionex (crear, cerrar,
+# reforzar margen, modificar SL) sobre la MISMA cuenta. Causa #7 del
+# documento: "si el bot dispara varias operaciones casi simultáneas
+# sobre la misma cuenta (crear + ajustar + reducir en paralelo), el
+# backend puede fallar al bloquear fondos concurrentemente". Con varios
+# hilos corriendo en paralelo (chequeo rápido cada 2s, monitoreo de 1
+# min, PAXG real) todos pudiendo escribir a la vez sobre la misma
+# cuenta, esto es una condición de carrera real y plausible — el
+# documento recomienda explícitamente "serializar las llamadas de
+# escritura por cuenta (una a la vez)". Se usa con "with
+# _pionex_write_lock:" en cada función que crea/cierra/ajusta.
+_pionex_write_lock = threading.Lock()
 
 TAKE_PROFIT_PCT = 0.0135  # 1.35% — referencia INTERNA nuestra (primer checkpoint del piso ascendente de v17), YA NO se manda directo a Pionex
 # v17 — El TP real que le mandamos a Pionex ahora es un techo alto (nunca
@@ -579,8 +594,11 @@ def cerrar_grilla_futuros(bu_order_id: str, nota: str = "Cierre automático") ->
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
-    data = resp.json()
+    # 27/08 — candado global: serializa esta escritura contra cualquier
+    # otra (crear/cerrar/reforzar) que otro hilo esté por mandar a la vez.
+    with _pionex_write_lock:
+        resp = _session.post(url, headers=headers, data=body_json, timeout=15)
+        data = resp.json()
     if not data.get("result"):
         raise RuntimeError(f"Pionex rechazó el cierre: {data}")
     return data
@@ -798,8 +816,10 @@ def reforzar_margen(bu_order_id: str, monto_extra_usdt: float, precio_actual: fl
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
-    return resp.json()
+    # 27/08 — candado global (ver _pionex_write_lock más arriba)
+    with _pionex_write_lock:
+        resp = _session.post(url, headers=headers, data=body_json, timeout=15)
+        return resp.json()
 
 
 def modificar_stop_loss(bu_order_id: str, nuevo_lossstop_pct: float) -> dict:
@@ -834,8 +854,10 @@ def modificar_stop_loss(bu_order_id: str, nuevo_lossstop_pct: float) -> dict:
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
-    data = resp.json()
+    # 27/08 — candado global (ver _pionex_write_lock más arriba)
+    with _pionex_write_lock:
+        resp = _session.post(url, headers=headers, data=body_json, timeout=15)
+        data = resp.json()
     # 19/08 (FIX CRÍTICO) — antes esto devolvía data tal cual, sin
     # chequear result. Si Pionex RECHAZABA el pedido (ej. por el nombre
     # de campo lossStopType sin confirmar, o cualquier otro motivo), el
@@ -887,13 +909,17 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
     # conexión nueva cada vez, como en la versión previa a v16) — SOLO
     # acá, en la creación real. Prueba #1 (sacar lossStop) NO resolvió
     # el BOT_INTERNAL_ERROR recurrente (INJ/NEAR/ZRX/ENS), se revirtió.
-    # Esta es la sospechosa siguiente: aunque se agregó ANTES de que el
-    # error se volviera frecuente, sigue siendo una diferencia real
-    # frente a la versión que funcionaba bien. Si esto tampoco resuelve,
-    # revertir de nuevo (Juanjo: "no manosear tanto el sistema") y
-    # replantear el diagnóstico de fondo.
-    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
-    return resp.json()
+    #
+    # 27/08 (Juanjo, PRUEBA #3, documento de diagnóstico oficial) —
+    # sumado el candado global _pionex_write_lock (causa #7 del
+    # documento: condición de carrera si el bot dispara varias
+    # escrituras casi simultáneas sobre la misma cuenta). Convive con la
+    # prueba #2 (sesión directa) — son 2 mitigaciones distintas, no se
+    # pisan entre sí. Si ninguna de las 3 pruebas resuelve el error,
+    # replantear el diagnóstico de fondo con Juanjo.
+    with _pionex_write_lock:
+        resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+        return resp.json()
 
 
 def calcular_sl_atr(atr_pct: float, multiplo: float = 3.0, piso_minimo: float = 15.0) -> float:

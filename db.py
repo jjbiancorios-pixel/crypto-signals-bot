@@ -2856,6 +2856,7 @@ def resumen_motivo_no_apertura() -> dict:
         SELECT motivo_no_apertura, resultado_pct, cerrada
         FROM senales_simuladas
         WHERE motivo_no_apertura IS NOT NULL AND motivo_no_apertura NOT LIKE 'score_bajo_%'
+          AND par != 'XMRUSDT'
     """)
     filas = [dict(f) for f in cur.fetchall()]
     conn.close()
@@ -3276,6 +3277,12 @@ def resultado_real_de_descartadas_por_filtro() -> dict:
     ya existía para las bloqueadas por falta de capital)? Solo cuenta
     las que YA CERRARON (con resultado real, no las que siguen abiertas
     en simulación).
+
+    26/08 — excluye XMRUSDT: confirmado con /detalle_extremos que sus
+    datos de precio están rotos (+2560% a +2727%, 15 casos distintos,
+    todos el mismo par) — arrastraban este promedio a números
+    imposibles (+511.97% llegó a verse). XMR ya está fuera de la lista
+    de pares activa desde el 22/08, esto solo limpia el historial viejo.
     """
     conn = _conn()
     cur = conn.cursor()
@@ -3283,7 +3290,7 @@ def resultado_real_de_descartadas_por_filtro() -> dict:
     for motivo, nombre in [("filtro_duro_adx_gate", "adx_gate"), ("filtro_duro_multi_tf", "multi_tf")]:
         cur.execute("""
             SELECT resultado_pct FROM senales_simuladas
-            WHERE motivo_no_apertura = ? AND cerrada = 1 AND resultado_pct IS NOT NULL
+            WHERE motivo_no_apertura = ? AND cerrada = 1 AND resultado_pct IS NOT NULL AND par != 'XMRUSDT'
         """, (motivo,))
         resultados = [f["resultado_pct"] for f in cur.fetchall()]
         if resultados:
