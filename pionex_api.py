@@ -141,19 +141,14 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
         "investmentFrom": "USER",
         "profitStopType": "profit_ratio",
         "profitStop": str(TP_FIJO_SIMPLE),
-        # 26/08 (Juanjo, PRUEBA) — lossStopType/lossStop SACADOS del
-        # pedido de creación. Motivo: comparando contra la versión previa
-        # a v16 (antes de que existiera este campo en el pedido), este
-        # es el cambio estructural que mejor coincide en el tiempo con
-        # que BOT_INTERNAL_ERROR pasó de "caso ocasional" (INJ, 17/08) a
-        # "casi toda señal de score alto" (NEAR/ZRX/ENS, con SL dinámico
-        # por ATR agregado el 23/08). Si esto confirma la causa, la
-        # protección de SL pasa a depender ENTERAMENTE de nuestro propio
-        # monitoreo (ver chequeo_rapido_ganancia_v17 en gestion_riesgo.py,
-        # ahora chequea sl_propio_pct cada 2 segundos). Si NO resuelve el
-        # error, revertir este cambio puntual (Juanjo: "no manosear tanto
-        # el sistema") y probar la sesión HTTP persistente como próxima
-        # sospechosa.
+        "lossStopType": "profit_ratio",
+        # 26/08 — REVERTIDO: se había sacado este campo como prueba para
+        # descartar si causaba el BOT_INTERNAL_ERROR recurrente de
+        # Pionex (INJ/NEAR/ZRX/ENS). Juanjo confirmó que sacarlo NO
+        # resolvió el problema — se restaura tal como estaba. Próxima
+        # sospechosa a probar: la sesión HTTP persistente (_session vs.
+        # requests directo, ver más abajo).
+        "lossStop": str(sl_pct if sl_pct is not None else SL_INICIAL_SIMPLE),
     }
     if extra_margin_usdt and extra_margin_usdt > 0:
         # Margen de origen (dinámico): reservado desde la apertura, baja el
@@ -887,7 +882,17 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    resp = _session.post(url, headers=headers, data=body_json, timeout=15)
+    # 26/08 (Juanjo, PRUEBA #2) — cambiado de _session.post (sesión HTTP
+    # persistente, agregada 19-20/08) a requests.post directo (una
+    # conexión nueva cada vez, como en la versión previa a v16) — SOLO
+    # acá, en la creación real. Prueba #1 (sacar lossStop) NO resolvió
+    # el BOT_INTERNAL_ERROR recurrente (INJ/NEAR/ZRX/ENS), se revirtió.
+    # Esta es la sospechosa siguiente: aunque se agregó ANTES de que el
+    # error se volviera frecuente, sigue siendo una diferencia real
+    # frente a la versión que funcionaba bien. Si esto tampoco resuelve,
+    # revertir de nuevo (Juanjo: "no manosear tanto el sistema") y
+    # replantear el diagnóstico de fondo.
+    resp = requests.post(url, headers=headers, data=body_json, timeout=15)
     return resp.json()
 
 

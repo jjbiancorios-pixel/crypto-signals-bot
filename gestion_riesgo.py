@@ -514,30 +514,14 @@ def chequeo_rapido_ganancia_v17() -> list:
             print(f"⚠️ {par}: resultado_actual quedó en None (desglose vacío o falló) — se salta este ciclo de 15seg.")
             continue
 
-        # 26/08 (Juanjo, PRUEBA) — chequeo de SL PROPIO, máxima prioridad
-        # de todo este bucle. Se agregó porque sacamos lossStopType/
-        # lossStop del pedido de creación real (prueba para descartar si
-        # ese campo causaba el BOT_INTERNAL_ERROR recurrente de Pionex,
-        # ver pionex_api._armar_body) — mientras dure esta prueba, la
-        # protección de SL depende ENTERAMENTE de este chequeo, ya no hay
-        # ningún respaldo nativo de Pionex. Se evalúa ANTES que cualquier
-        # otra cosa en el bucle.
-        sl_propio = op.get("sl_propio_pct")
-        if sl_propio is not None and resultado_actual <= sl_propio:
-            try:
-                resultado_real, advertencia = _cerrar_y_obtener_resultado_real(
-                    par, bu_order_id, resultado_actual, op.get("capital_asignado"),
-                    nota_pionex=f"SL propio (Pionex sin lossStop nativo, prueba 26/08) — tocó {sl_propio}%"
-                )
-                db.cerrar_senal_automatica(op["id"], resultado_real, motivo="sl_propio_sin_nativo")
-                mensaje = f"🛑 {par}: SL PROPIO ejecutado (sin respaldo nativo de Pionex) — umbral {sl_propio}%, cerrada en {resultado_real:+.2f}%."
-                acciones.append(mensaje + (f"\n{advertencia}" if advertencia else ""))
-            except Exception as e:
-                if "BOT_ORDER_ALREADY_CLOSED" in str(e):
-                    acciones.append(f"ℹ️ {par}: el SL propio quiso cerrar pero ya se había cerrado sola.")
-                else:
-                    acciones.append(f"🚨 {par}: TOCÓ EL SL PROPIO PERO FALLÓ EL CIERRE ({e}) — SIN RESPALDO NATIVO, REVISAR YA MANUALMENTE.")
-            continue
+        # 26/08 — SACADO: el chequeo de "SL propio" (para cuando se
+        # había sacado lossStop nativo del pedido de creación, como
+        # prueba). Juanjo confirmó que esa prueba no resolvió el
+        # BOT_INTERNAL_ERROR — se restauró el lossStop nativo en
+        # pionex_api._armar_body, así que este chequeo quedaría
+        # redundante y podría generar confusión (2 sistemas de SL
+        # corriendo a la vez). Sigue existiendo la columna sl_propio_pct
+        # en la base por si se retoma, simplemente no se usa.
 
         # Lado pérdida: checkpoints con análisis técnico, cada 15seg (no
         # esperar al loop de 1 min, que puede llegar tarde en caídas rápidas).
