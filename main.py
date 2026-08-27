@@ -739,15 +739,17 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     #
     # 26/08 (Juanjo, Opción A) — bajado de 20 a 15: confirmado que ADX
     # seguía siendo el bloqueador dominante (~90%+ de los descartes) aun
-    # en 20. Probar unas horas — si sigue habiendo pocas o ninguna
-    # recomendación, Juanjo indicó escalar a Opción B (sacar la
-    # exigencia de que el DI confirme la dirección exacta, dejar solo la
-    # fuerza de tendencia) — NO implementar B todavía, solo si se
-    # confirma que A no alcanzó.
-    sombra_adx_gate = adx15["adx"]>15 and (
-        (adx15["plus_di"]>adx15["minus_di"] and es_largo) or
-        (adx15["minus_di"]>adx15["plus_di"] and not es_largo)
-    )
+    # en 20.
+    #
+    # 26/08 (Juanjo, Opción B — escalado tras confirmar que A no
+    # alcanzó, 0 señales nuevas) — sacada la exigencia de que el DI
+    # confirme la EXACTA dirección de la señal. Ahora ADX>15 mide solo
+    # "¿hay suficiente fuerza de tendencia?", sin importar de qué lado
+    # — el resto del score (RSI, MACD, patrones, BTC, etc.) ya evalúa la
+    # dirección por su cuenta, esta exigencia extra podía ser redundante
+    # y estar sumándose a la restricción total sin aportar información
+    # nueva.
+    sombra_adx_gate = adx15["adx"]>15
     # v18 (21/08) — TODOS los indicadores de sombra se calculan ACÁ,
     # ANTES de los 2 filtros duros (no después) — antes, si ADX o
     # multi_tf bloqueaban, el código cortaba con return None sin llegar a
