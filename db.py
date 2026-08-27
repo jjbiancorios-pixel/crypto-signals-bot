@@ -1345,19 +1345,30 @@ def marcar_resumen_enviado(fecha: str):
 
 
 # ── Capital y zona de riesgo (automatización Pionex) ────────
-def guardar_bu_order_id(senal_id: int, bu_order_id: str, capital_asignado: float):
+def guardar_bu_order_id(senal_id: int, bu_order_id: str, capital_asignado: float, sl_propio_pct: float = None):
     """
     Guarda el ID del bot de Pionex y el capital comprometido (inversión +
     margen) tras crear la grilla automática real. Marca registrado_pionex=1
     porque ya tenemos el dato real de Pionex (bu_order_id) — mejor que un
     /registrar manual — así /pendientes no la marca como "falta registrar".
+
+    26/08 (Juanjo, prueba) — sl_propio_pct: al sacar el lossStop nativo
+    del pedido de creación (prueba para descartar si eso causaba el
+    BOT_INTERNAL_ERROR recurrente), la protección de SL pasa a depender
+    ENTERAMENTE de nuestro propio monitoreo — necesitamos guardar acá
+    qué SL le correspondía a esta posición para poder chequearlo
+    nosotros mismos cada 2 segundos.
     """
     conn = _conn()
     cur = conn.cursor()
+    try:
+        cur.execute("ALTER TABLE senales ADD COLUMN sl_propio_pct REAL")
+    except Exception:
+        pass
     cur.execute("""
-        UPDATE senales SET bu_order_id = ?, capital_asignado = ?, registrado_pionex = 1
+        UPDATE senales SET bu_order_id = ?, capital_asignado = ?, registrado_pionex = 1, sl_propio_pct = ?
         WHERE id = ?
-    """, (bu_order_id, capital_asignado, senal_id))
+    """, (bu_order_id, capital_asignado, sl_propio_pct, senal_id))
     conn.commit()
     conn.close()
 

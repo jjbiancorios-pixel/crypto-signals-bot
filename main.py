@@ -1024,15 +1024,20 @@ def _abrir_grilla_automatica(r: dict, check: dict):
     # 17/08 — Reintento automático ante BOT_INTERNAL_ERROR de Pionex (caso
     # real: INJUSDT, señal de score 11/16 perdida por completo porque
     # Pionex devolvió un error interno puntual y transitorio del lado de
-    # ELLOS, no un problema de nuestros datos).
-    # 25/08 (Juanjo, investigación) — subido de 3 a 5 intentos, con
-    # espera CRECIENTE (3s, 6s, 12s, 24s) en vez de 3s fija siempre.
-    # Motivo: el mismo patrón se repitió con 3 pares distintos (INJ,
-    # NEAR, ZRX) — las 3 veces, los 3 intentos con 3s fallaron igual,
-    # sugiriendo que el problema del lado de Pionex a veces necesita más
-    # tiempo para despejarse, no solo más intentos rápidos seguidos.
-    MAX_INTENTOS_APERTURA = 5
-    ESPERAS_ENTRE_INTENTOS = [3, 6, 12, 24]  # segundos, creciente
+    # ELLOS, no un problema de nuestros datos). 2 reintentos más, con una
+    # pausa corta entre cada uno, antes de dar la señal por perdida.
+    #
+    # 25/08 — Se probó subir a 5 intentos con espera creciente
+    # (3-6-12-24s) tras ver el mismo patrón repetirse con INJ/NEAR/ZRX,
+    # pero Juanjo pidió NO subirlo — el sistema de señales funcionó bien
+    # históricamente, a confirmar primero si esto fue una situación
+    # puntual antes de tocar los tiempos. Revertido a 3 intentos / 3s
+    # fijos. 26/08: CONFIRMADO que este revert nunca había quedado
+    # guardado en el paquete real entregado (quedó solo en un espacio de
+    # trabajo temporal) — ZRX volvió a fallar con "5 intentos" pese al
+    # pedido explícito de revertir. Corregido ahora, verificado que
+    # quede en el archivo real.
+    MAX_INTENTOS_APERTURA = 3
     for intento in range(1, MAX_INTENTOS_APERTURA + 1):
         try:
             # Antes se usaba row=67 fijo, ignorando el cálculo propio de
@@ -1046,6 +1051,7 @@ def _abrir_grilla_automatica(r: dict, check: dict):
             # las volátiles, nunca más ajustado que el piso mínimo de
             # -15%.
             sl_atr = pionex_api.calcular_sl_atr(r["atr_pct"])
+            r["sl_atr_usado"] = sl_atr  # 26/08: para que quien llama pueda guardarlo en guardar_bu_order_id
             resp = pionex_api.crear_grilla_futuros(
                 par=r["par"].replace("USDT", ""),
                 top=rango_alto_fresco,
@@ -1089,16 +1095,14 @@ def _abrir_grilla_automatica(r: dict, check: dict):
 
             codigo_error = resp.get("code", "")
             if codigo_error == "BOT_INTERNAL_ERROR" and intento < MAX_INTENTOS_APERTURA:
-                espera = ESPERAS_ENTRE_INTENTOS[intento - 1]
-                print(f"⚠️ {r['par']}: BOT_INTERNAL_ERROR de Pionex (intento {intento}/{MAX_INTENTOS_APERTURA}), reintentando en {espera}s...")
-                time.sleep(espera)
+                print(f"⚠️ {r['par']}: BOT_INTERNAL_ERROR de Pionex (intento {intento}/{MAX_INTENTOS_APERTURA}), reintentando en 3s...")
+                time.sleep(3)
                 continue
             return None, f"⚠️ Pionex no devolvió buOrderId tras {intento} intento(s): {resp}"
         except Exception as e:
             if intento < MAX_INTENTOS_APERTURA:
-                espera = ESPERAS_ENTRE_INTENTOS[intento - 1]
-                print(f"⚠️ {r['par']}: error al abrir grilla (intento {intento}/{MAX_INTENTOS_APERTURA}) — {e}, reintentando en {espera}s...")
-                time.sleep(espera)
+                print(f"⚠️ {r['par']}: error al abrir grilla (intento {intento}/{MAX_INTENTOS_APERTURA}) — {e}, reintentando en 3s...")
+                time.sleep(3)
                 continue
             return None, f"⚠️ Error al abrir grilla automática tras {intento} intento(s): {e}"
 
@@ -1174,7 +1178,7 @@ def intentar_reapertura(candidato: dict):
 
     bu_order_id, mensaje = _abrir_grilla_automatica(r, check)
     if bu_order_id:
-        db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
+        db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"], sl_propio_pct=r.get("sl_atr_usado"))
         enviar_telegram(
             f"🔁 <b>REAPERTURA #{nuevo_num} — {par.replace('USDT','')}</b>\n"
             f"{r['direccion']}  |  Score: {r['score']}/{r['score_max']}\n"
@@ -1370,7 +1374,7 @@ def generar_alertas(forzar_corto=False, forzar_largo=False):
                 if check["permitido"]:
                     bu_order_id, apertura_auto = _abrir_grilla_automatica(r, check)
                     if bu_order_id:
-                        db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"])
+                        db.guardar_bu_order_id(senal_id, bu_order_id, check["capital_operacion"], sl_propio_pct=r.get("sl_atr_usado"))
                         aperturas_este_ciclo += 1
                         # v17 — si se liberó una posición para hacerle
                         # lugar a esta señal, avisar explícitamente.

@@ -141,11 +141,19 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
         "investmentFrom": "USER",
         "profitStopType": "profit_ratio",
         "profitStop": str(TP_FIJO_SIMPLE),
-        "lossStopType": "profit_ratio",
-        # 23/08 (Juanjo) — SL ahora puede venir calculado por ATR de cada
-        # moneda (más ancho para las volátiles, nunca más ajustado que el
-        # piso mínimo) — sl_pct=None cae al fijo de siempre (respaldo).
-        "lossStop": str(sl_pct if sl_pct is not None else SL_INICIAL_SIMPLE),
+        # 26/08 (Juanjo, PRUEBA) — lossStopType/lossStop SACADOS del
+        # pedido de creación. Motivo: comparando contra la versión previa
+        # a v16 (antes de que existiera este campo en el pedido), este
+        # es el cambio estructural que mejor coincide en el tiempo con
+        # que BOT_INTERNAL_ERROR pasó de "caso ocasional" (INJ, 17/08) a
+        # "casi toda señal de score alto" (NEAR/ZRX/ENS, con SL dinámico
+        # por ATR agregado el 23/08). Si esto confirma la causa, la
+        # protección de SL pasa a depender ENTERAMENTE de nuestro propio
+        # monitoreo (ver chequeo_rapido_ganancia_v17 en gestion_riesgo.py,
+        # ahora chequea sl_propio_pct cada 2 segundos). Si NO resuelve el
+        # error, revertir este cambio puntual (Juanjo: "no manosear tanto
+        # el sistema") y probar la sesión HTTP persistente como próxima
+        # sospechosa.
     }
     if extra_margin_usdt and extra_margin_usdt > 0:
         # Margen de origen (dinámico): reservado desde la apertura, baja el
