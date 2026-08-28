@@ -364,7 +364,48 @@ def _precio_binance(par):
     r = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={par}", timeout=6)
     return float(r.json()["price"])
 
-def obtener_precio_pionex_directo(par: str):
+# 28/08 (Juanjo) — caso real GRAVE: STXUSDT llegó a +22.2% de pico, el
+# trailing debía cortar en +17.6% (20% de retroceso tolerado desde ahí),
+# pero siguió cayendo hasta +10.44% sin que el sistema actuara. Causa:
+# el chequeo rápido de posiciones ABIERTAS usa la MISMA función y el
+# MISMO canal que la evaluación de candidatos NUEVOS — cuando el 429 de
+# candidatos activaba la pausa adaptativa de 15seg, el chequeo de
+# posiciones REALES quedaba CIEGO durante esa ventana también, sin
+# ningún dato para comparar contra el piso del trailing.
+#
+# Se separa en 2 canales independientes: el "prioritario" (posiciones
+# abiertas reales, plata en juego) usa SU PROPIO estado de límite,
+# nunca afectado por lo que le pase al canal general (candidatos
+# nuevos, que pueden esperar sin costo real). Ambos siguen siendo
+# responsables por su cuenta (no spamean Pionex), pero uno no bloquea
+# al otro.
+_rate_limit_lock_prioritario = threading.Lock()
+_ultimo_llamado_pionex_prioritario = [0.0]
+_pausa_extra_hasta_prioritario = [0.0]
+INTERVALO_MINIMO_PIONEX_PRIORITARIO = 0.5  # más laxo que el general (1.0s) — es plata real en juego
+PAUSA_TRAS_429_PRIORITARIO_SEGUNDOS = 5.0  # más corto que el general (15s) — no podemos quedarnos ciegos tanto tiempo
+
+
+def _get_prioritario(url, timeout=10):
+    """Llamada GET fuera de la sesión general, con su propio límite — usada solo para posiciones abiertas reales."""
+    with _rate_limit_lock_prioritario:
+        ahora = time.time()
+        espera = max(
+            INTERVALO_MINIMO_PIONEX_PRIORITARIO - (ahora - _ultimo_llamado_pionex_prioritario[0]),
+            _pausa_extra_hasta_prioritario[0] - ahora,
+        )
+        if espera > 0:
+            time.sleep(espera)
+        _ultimo_llamado_pionex_prioritario[0] = time.time()
+    resp = requests.get(url, timeout=timeout)
+    if resp.status_code == 429:
+        with _rate_limit_lock_prioritario:
+            _pausa_extra_hasta_prioritario[0] = time.time() + PAUSA_TRAS_429_PRIORITARIO_SEGUNDOS
+        print(f"🐢 [prioritario] Pionex devolvió 429 — pausa corta de {PAUSA_TRAS_429_PRIORITARIO_SEGUNDOS}s (no afecta al canal general).")
+    return resp
+
+
+def obtener_precio_pionex_directo(par: str, prioritario: bool = False):
     """
     19/08 — Precio directo de PIONEX (endpoint público GET
     /api/v1/market/tickers), NO de la cascada externa Bybit/OKX/Binance.
@@ -376,12 +417,18 @@ def obtener_precio_pionex_directo(par: str):
     discrepancia detectada). Pionex mismo, siendo su propio motor de
     trading, siempre tiene el precio real correcto — endpoint público,
     sin necesidad de firma.
+
+    28/08 — prioritario=True: usa el canal separado (ver arriba), para
+    que una posición REAL abierta nunca quede ciega por una pausa
+    disparada por candidatos nuevos. Debe usarse SIEMPRE que se llame
+    desde el monitoreo de posiciones abiertas (mejor_resultado, trailing,
+    SL).
     """
     base = par.replace("USDT", "")
     symbol = f"{base}_USDT_PERP"
     url = f"{PIONEX_BASE_URL}/api/v1/market/tickers?symbol={symbol}"
     try:
-        resp = _session.get(url, timeout=10)
+        resp = _get_prioritario(url, timeout=10) if prioritario else _session.get(url, timeout=10)
         try:
             data = resp.json()
         except Exception as e:
@@ -469,7 +516,7 @@ def calcular_zona_riesgo_combinada(bu_order_id: str, capital_asignado: float,
     # externa) — por consistencia con la recomendación del documento de
     # trailing: cualquier decisión basada en precio debería usar la
     # fuente más directa posible, no solo el camino del trailing.
-    precio_actual = obtener_precio_pionex_directo(par)
+    precio_actual = obtener_precio_pionex_directo(par, prioritario=True)
     if precio_actual:
         try:
             r_distancia = calcular_zona_riesgo(bu_order_id, precio_actual)
@@ -723,7 +770,7 @@ def calcular_resultado_actual(bu_order_id: str, par: str = None, capital_total_r
             # trailing agregadas al proyecto, este es el camino crítico
             # de latencia para decidir el cierre, y depender de un
             # exchange externo suma un salto de red innecesario.
-            precio_actual = obtener_precio_pionex_directo(par)
+            precio_actual = obtener_precio_pionex_directo(par, prioritario=True)
             if precio_actual is not None:
                 es_corto = bod.get("trend") == "short"
                 if es_corto:
@@ -772,7 +819,7 @@ def calcular_resultado_desglosado(bu_order_id: str, par: str = None, capital_tot
             # trailing agregadas al proyecto, este es el camino crítico
             # de latencia para decidir el cierre, y depender de un
             # exchange externo suma un salto de red innecesario.
-            precio_actual = obtener_precio_pionex_directo(par)
+            precio_actual = obtener_precio_pionex_directo(par, prioritario=True)
             if precio_actual is not None:
                 es_corto = bod.get("trend") == "short"
                 if es_corto:

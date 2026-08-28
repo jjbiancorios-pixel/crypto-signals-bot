@@ -29,7 +29,7 @@ PARES = [
     "ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","MATICUSDT",
     "LTCUSDT","UNIUSDT","ATOMUSDT","ETCUSDT","XLMUSDT",
     "TRXUSDT","AAVEUSDT","ALGOUSDT","ICPUSDT","AXSUSDT",
-    "SANDUSDT","MANAUSDT","GALAUSDT","FTMUSDT","NEARUSDT",
+    "SANDUSDT","MANAUSDT","GALAUSDT","NEARUSDT",
     "EGLDUSDT","CHZUSDT","CRVUSDT","RUNEUSDT","HBARUSDT",
     "ARBUSDT","INJUSDT","SUIUSDT","WLDUSDT",
     "STXUSDT","LDOUSDT","SEIUSDT","FETUSDT","GRTUSDT",
@@ -1192,25 +1192,12 @@ def _abrir_grilla_automatica(r: dict, check: dict):
                     f"USD {check['capital_operacion']:.2f} total)"
                     + (f" — tras {intento} intentos" if intento > 1 else "")
                 )
-                # 20/08 (punto 1, pedido de Juanjo) — verificación
-                # post-apertura: consulta el resultado real apenas se
-                # confirma la orden, para medir con datos reales cuánto
-                # se pierde de entrada (comisión de apertura + spread +
-                # cualquier desfasaje residual) — puramente informativo,
-                # no cambia ninguna decisión, da visibilidad para seguir
-                # optimizando la certeza de entrada.
-                try:
-                    desglose_inicial = pionex_api.calcular_resultado_desglosado(
-                        bu_order_id, par=r["par"], capital_total_real=check["capital_operacion"]
-                    )
-                    if desglose_inicial and desglose_inicial.get("total_pct") is not None:
-                        resultado_inicial = desglose_inicial["total_pct"]
-                        if resultado_inicial < -1.0:
-                            mensaje += f"\n⚠️ Precisión de entrada: ya arrancó en {resultado_inicial:+.2f}% (por debajo del -1% buscado) — revisar."
-                        else:
-                            mensaje += f"\n📍 Precisión de entrada: {resultado_inicial:+.2f}% al confirmar."
-                except Exception:
-                    pass
+                # 28/08 (Juanjo, informe de simplificación) — ELIMINADA la
+                # verificación de "precisión de entrada" post-apertura:
+                # era puramente informativa (nunca cambió ninguna
+                # decisión) y consultaba a Pionex una vez más por cada
+                # apertura real, sumando carga innecesaria justo en el
+                # momento más sensible (recién abierta la orden).
                 return bu_order_id, mensaje
 
             codigo_error = resp.get("code", "")
@@ -1789,7 +1776,8 @@ def main():
                     enviar_telegram(aviso)
             except Exception as e:
                 print(f"Error en chequeo de huérfanas: {e}")
-        schedule.every(30).minutes.do(_chequeo_huerfanas)
+        # 28/08 (Juanjo, informe de simplificación): relajado de 30 a 60min
+        schedule.every(60).minutes.do(_chequeo_huerfanas)
 
         # 19/08 — El chequeo de señales fantasma se movió al INICIO de
         # cada ciclo de análisis (cada 15 min, en generar_alertas) — no

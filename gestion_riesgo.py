@@ -50,6 +50,21 @@ _fallos_consultar_cierre = {}
 # chequean 1 de cada 5 ciclos, no todos — reduce la carga de consultas
 # a Pionex sin afectar la velocidad donde el trailing sí importa.
 _contador_ciclos_chequeo_rapido = 0
+
+# 28/08 (Juanjo, informe de simplificación) — timestamps GLOBALES para
+# relajar la frecuencia de 3 grupos de chequeos dentro de
+# monitorear_zonas_riesgo() (que sigue corriendo cada 1 min desde su
+# hilo propio) — cada grupo ahora solo hace su consulta real a Pionex
+# si pasó suficiente tiempo desde la última vez, sin importar cuántas
+# veces se llame a la función en el medio. No agrega hilos nuevos ni
+# lógica compleja — un timestamp simple por grupo, gating al principio
+# de cada bloque.
+_ultimo_chequeo_cierre = [0.0]
+_ultimo_chequeo_sl_respaldo = [0.0]
+_ultimo_chequeo_zona_riesgo = [0.0]
+INTERVALO_CHEQUEO_CIERRE_SEG = 5 * 60      # 693: 1min -> 5min
+INTERVALO_CHEQUEO_SL_RESPALDO_SEG = 5 * 60  # 792: 1min -> 5min
+INTERVALO_CHEQUEO_ZONA_RIESGO_SEG = 3 * 60  # 877/888/961: 1min -> 3min
 # v17 — Checkpoints de pérdida CON análisis técnico (no solo magnitud):
 # en -6/-9/-12%, se evalúan 4 factores; si se cumplen 3 de 4, se mantiene
 # hasta el próximo checkpoint; si 2 o menos, se cierra ahí mismo. -15% es
@@ -675,6 +690,21 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
     candidatos_reapertura = []
     abiertas = db.operaciones_abiertas_con_bu_order()
 
+    # 28/08 — gates globales, calculados UNA vez por ciclo (no por
+    # posición) — si no pasó suficiente tiempo desde la última vez que
+    # se hizo ESTE tipo de consulta, se saltea para TODAS las posiciones
+    # en este ciclo, no solo una.
+    ahora_ts = time.time()
+    corre_chequeo_cierre = (ahora_ts - _ultimo_chequeo_cierre[0]) >= INTERVALO_CHEQUEO_CIERRE_SEG
+    corre_sl_respaldo = (ahora_ts - _ultimo_chequeo_sl_respaldo[0]) >= INTERVALO_CHEQUEO_SL_RESPALDO_SEG
+    corre_zona_riesgo = (ahora_ts - _ultimo_chequeo_zona_riesgo[0]) >= INTERVALO_CHEQUEO_ZONA_RIESGO_SEG
+    if corre_chequeo_cierre:
+        _ultimo_chequeo_cierre[0] = ahora_ts
+    if corre_sl_respaldo:
+        _ultimo_chequeo_sl_respaldo[0] = ahora_ts
+    if corre_zona_riesgo:
+        _ultimo_chequeo_zona_riesgo[0] = ahora_ts
+
     for op in abiertas:
         bu_order_id = op["bu_order_id"]
         senal_id = op["id"]
@@ -689,22 +719,31 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
 
         # PASO 1: ¿ya cerró en Pionex? Si sí, liberar capital y no seguir
         # chequeando zona de riesgo sobre una operación que ya no existe.
-        try:
-            estado_cierre = pionex_api.esta_cerrada(bu_order_id)
-            _fallos_consultar_cierre.pop(bu_order_id, None)  # se recuperó, resetear el contador
-        except Exception as e:
-            # 27/08 (Juanjo) — caso real: EGLDUSDT/ZRXUSDT/STXUSDT
-            # repitiendo el MISMO error cada minuto desde medianoche, sin
-            # ningún dato nuevo — puro ruido en Telegram sin ayudar a
-            # diagnosticar nada. Ahora solo avisa en el 1er fallo, y
-            # después cada 15 minutos (15, 30, 45...) mientras persista —
-            # sigue reintentando cada minuto igual, solo se calla el
-            # aviso repetido.
-            _fallos_consultar_cierre[bu_order_id] = _fallos_consultar_cierre.get(bu_order_id, 0) + 1
-            n_fallos = _fallos_consultar_cierre[bu_order_id]
-            if n_fallos == 1 or n_fallos % 15 == 0:
-                acciones.append(f"⚠️ {par}: error consultando cierre, van {n_fallos} intento(s) seguidos fallando ({e})")
-            continue
+        # 28/08 — relajado de 1min a 5min (INTERVALO_CHEQUEO_CIERRE_SEG):
+        # si todavía no toca, se salta la consulta real y se asume que
+        # sigue abierta (estado_cierre={"cerrada": False}) — mejor
+        # suposición disponible sin gastar la consulta, el resto del
+        # código sigue funcionando igual porque estado_cierre queda
+        # definido de todas formas.
+        if not corre_chequeo_cierre:
+            estado_cierre = {"cerrada": False}
+        else:
+            try:
+                estado_cierre = pionex_api.esta_cerrada(bu_order_id)
+                _fallos_consultar_cierre.pop(bu_order_id, None)  # se recuperó, resetear el contador
+            except Exception as e:
+                # 27/08 (Juanjo) — caso real: EGLDUSDT/ZRXUSDT/STXUSDT
+                # repitiendo el MISMO error cada minuto desde medianoche, sin
+                # ningún dato nuevo — puro ruido en Telegram sin ayudar a
+                # diagnosticar nada. Ahora solo avisa en el 1er fallo, y
+                # después cada 15 minutos (15, 30, 45...) mientras persista —
+                # sigue reintentando cada minuto igual, solo se calla el
+                # aviso repetido.
+                _fallos_consultar_cierre[bu_order_id] = _fallos_consultar_cierre.get(bu_order_id, 0) + 1
+                n_fallos = _fallos_consultar_cierre[bu_order_id]
+                if n_fallos == 1 or n_fallos % 15 == 0:
+                    acciones.append(f"⚠️ {par}: error consultando cierre, van {n_fallos} intento(s) seguidos fallando ({e})")
+                continue
 
         if estado_cierre.get("cerrada"):
             # FIX 28/07: no confiar en una sola lectura — Pionex puede
@@ -786,15 +825,23 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         # (cerrar_grilla_futuros), no solo informativo — decisión de Juanjo
         # tras el caso real de EGLD (-215.68%, cerró en solo 6hs, algo que
         # ninguna regla basada en tiempo hubiera prevenido).
+        # 28/08 — relajado de 1min a 5min (INTERVALO_CHEQUEO_SL_RESPALDO_
+        # SEG): es un RESPALDO lejano (el chequeo rápido de 2seg, con
+        # escalonado por zona de trailing, ya cubre esto mucho más
+        # rápido) — cuando se salta, desglose queda en None, y TODO el
+        # código de abajo ya maneja ese caso de forma segura (chequea
+        # "is not None" antes de usarlo).
         capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
         fallo_stop_loss = None
-        try:
-            desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, par=par, capital_total_real=capital_real_op)
-            if desglose is None:
-                fallo_stop_loss = "Pionex respondió con datos incompletos"
-        except Exception as e:
-            desglose = None
-            fallo_stop_loss = str(e)
+        desglose = None
+        if corre_sl_respaldo:
+            try:
+                desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, par=par, capital_total_real=capital_real_op)
+                if desglose is None:
+                    fallo_stop_loss = "Pionex respondió con datos incompletos"
+            except Exception as e:
+                desglose = None
+                fallo_stop_loss = str(e)
         resultado_actual_sl = desglose["total_pct"] if desglose else None
 
         # 05/08 (FIX): antes CUALQUIER fallo acá (con o sin excepción) se
@@ -870,9 +917,14 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         # por pedido de Juanjo. Se avisa UNA sola vez por operación (no en
         # cada chequeo, y en v16 el chequeo corre cada 1 min) para no
         # spamear Telegram.
+        # 28/08 — este aviso y la zona de riesgo de abajo comparten el
+        # mismo gate de 3min (INTERVALO_CHEQUEO_ZONA_RIESGO_SEG) — el
+        # aviso de 10hs ya era infrecuente por su cuenta (una sola vez
+        # por posición), agregarle el mismo gate como el resto del grupo
+        # como mucho lo demora unos minutos, sin ningún efecto práctico.
         horas_abierta = minutos_abierta / 60 if minutos_abierta is not None else None
 
-        if horas_abierta is not None and horas_abierta >= HORAS_CIERRE_AUTOMATICO and not op.get("aviso_10hs_enviado"):
+        if corre_zona_riesgo and horas_abierta is not None and horas_abierta >= HORAS_CIERRE_AUTOMATICO and not op.get("aviso_10hs_enviado"):
             capital_real_op = op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION)
             resultado_actual = pionex_api.calcular_resultado_actual(bu_order_id, par=par, capital_total_real=capital_real_op)
             db.marcar_aviso_10hs_enviado(senal_id)
@@ -884,14 +936,20 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
             else:
                 acciones.append(f"⏱️ {par}: lleva {horas_abierta:.1f}hs abierta (no se pudo calcular el % actual).")
 
-        try:
-            resultado = pionex_api.calcular_zona_riesgo_combinada(
-                bu_order_id, op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION),
-                RATIO_MARGEN_ORIGEN, par
-            )
-        except Exception as e:
-            acciones.append(f"⚠️ {par}: error consultando Pionex ({e})")
-            continue
+        # 28/08 — zona de riesgo/margen relajada de 1min a 3min: si no
+        # toca este ciclo, resultado={} (zona="desconocida" por default,
+        # ninguna de las 3 ramas verde/amarilla/roja se dispara — no
+        # action, mismo comportamiento que "todo sigue como estaba").
+        resultado = {}
+        if corre_zona_riesgo:
+            try:
+                resultado = pionex_api.calcular_zona_riesgo_combinada(
+                    bu_order_id, op.get("capital_asignado") or (capital_total * PCT_CAPITAL_POR_OPERACION),
+                    RATIO_MARGEN_ORIGEN, par
+                )
+            except Exception as e:
+                acciones.append(f"⚠️ {par}: error consultando Pionex ({e})")
+                continue
 
         zona = resultado.get("zona", "desconocida")
         zona_anterior = op.get("zona_riesgo", "verde")
@@ -1039,11 +1097,17 @@ def simular_seguimiento():
     el ATR propio de cada moneda guardado para las simuladas, se usa el
     piso mínimo como aproximación razonable, no el cálculo completo por
     ATR que sí tienen las reales).
+
+    28/08 (Juanjo, informe de simplificación) — el precio ahora sale de
+    la CASCADA externa (obtener_precio_mercado), no de Pionex — es una
+    simulación, nunca arriesga capital real, no tiene ningún motivo para
+    competir por el mismo cupo de consultas que el trailing de
+    posiciones reales.
     """
     abiertas = db.operaciones_simuladas_abiertas()
     for op in abiertas:
         try:
-            precio_actual = pionex_api.obtener_precio_pionex_directo(op["par"])
+            precio_actual = pionex_api.obtener_precio_mercado(op["par"])
         except Exception:
             precio_actual = None
         if precio_actual is None or not op["precio_entrada"]:
