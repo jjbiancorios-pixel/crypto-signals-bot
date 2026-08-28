@@ -59,17 +59,36 @@ _session = requests.Session()
 # CUALQUIER consulta a Pionex, sin importar qué función la origine.
 _rate_limit_lock = threading.Lock()
 _ultimo_llamado_pionex = [0.0]
-INTERVALO_MINIMO_PIONEX = 0.25  # 250ms entre consultas = máx. 4/segundo
+INTERVALO_MINIMO_PIONEX = 1.0  # 28/08: subido de 0.25s a 1.0s — 4/seg no alcanzó (seguían los 429 con el limitador ya activo), Pionex parece tener un límite más estricto de lo asumido. Ahora máx. 1 consulta por segundo.
+
+# 28/08 — retroceso ADAPTATIVO: con solo un intervalo fijo entre
+# llamadas, seguían apareciendo 429 aunque cada llamada individual
+# respetara el 1seg mínimo — sugiere un límite por VENTANA (ej. "máx.
+# N por minuto"), no solo por espaciado entre llamadas consecutivas. Si
+# se detecta un 429 REAL (no cualquier error), se fuerza una pausa
+# extra de 15seg antes de la próxima consulta — dándole tiempo a la
+# ventana de límite de Pionex a resetear, en vez de seguir insistiendo
+# al mismo ritmo mientras el límite sigue activo del otro lado.
+_pausa_extra_hasta = [0.0]
+PAUSA_TRAS_429_SEGUNDOS = 15.0
 
 _request_original = _session.request
 def _request_con_limite(*args, **kwargs):
     with _rate_limit_lock:
         ahora = time.time()
-        espera = INTERVALO_MINIMO_PIONEX - (ahora - _ultimo_llamado_pionex[0])
-        if espera > 0:
-            time.sleep(espera)
+        limite_espera = max(
+            INTERVALO_MINIMO_PIONEX - (ahora - _ultimo_llamado_pionex[0]),
+            _pausa_extra_hasta[0] - ahora,
+        )
+        if limite_espera > 0:
+            time.sleep(limite_espera)
         _ultimo_llamado_pionex[0] = time.time()
-    return _request_original(*args, **kwargs)
+    resp = _request_original(*args, **kwargs)
+    if getattr(resp, "status_code", None) == 429:
+        with _rate_limit_lock:
+            _pausa_extra_hasta[0] = time.time() + PAUSA_TRAS_429_SEGUNDOS
+        print(f"🐢 Pionex devolvió 429 — forzando pausa extra de {PAUSA_TRAS_429_SEGUNDOS}s antes de la próxima consulta.")
+    return resp
 _session.request = _request_con_limite
 
 # 27/08 (Juanjo, documento de diagnóstico BOT_INTERNAL_ERROR) — candado
