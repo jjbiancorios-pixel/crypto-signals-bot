@@ -283,14 +283,19 @@ def obtener_balance_cuenta() -> float:
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
     try:
         resp = _session.get(url, headers=headers, timeout=15)
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception as e:
+            print(f"⚠️ obtener_balance_cuenta(): respuesta no-JSON — HTTP {resp.status_code} | {(resp.text or '')[:200]!r} | {e}")
+            return None
         if not data.get("result"):
             return None
         for b in data.get("data", {}).get("balances", []):
             if b.get("coin") == "USDT":
                 return round(float(b.get("free", 0)) + float(b.get("frozen", 0)), 2)
         return 0.0
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ obtener_balance_cuenta(): falló la consulta — {e}")
         return None
 
 
@@ -329,14 +334,25 @@ def obtener_precio_pionex_directo(par: str):
     url = f"{PIONEX_BASE_URL}/api/v1/market/tickers?symbol={symbol}"
     try:
         resp = _session.get(url, timeout=10)
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception as e:
+            # 27/08 (Juanjo) — caso real WLDUSDT: esto fallaba en
+            # silencio (except Exception: return None), sin ningún
+            # rastro de POR QUÉ — mismo patrón exacto que encontramos en
+            # consultar_orden (respuesta vacía o no-JSON de Pionex).
+            # Ahora se loguea el código HTTP y el texto real antes de
+            # devolver None, para poder diagnosticar la próxima vez.
+            print(f"⚠️ obtener_precio_pionex_directo({par}): respuesta no-JSON — HTTP {resp.status_code} | primeros 200 caracteres: {(resp.text or '')[:200]!r} | error: {e}")
+            return None
         if not data.get("result"):
             return None
         tickers = data.get("data", {}).get("tickers", [])
         if not tickers:
             return None
         return float(tickers[0]["close"])
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ obtener_precio_pionex_directo({par}): falló la consulta — {e}")
         return None
 
 
@@ -365,7 +381,11 @@ def obtener_precio_oro():
     """
     try:
         r = requests.get("https://xaus.com/api/v1/spot?compact=1", timeout=10)
-        data = r.json()
+        try:
+            data = r.json()
+        except Exception as e:
+            print(f"⚠️ precio oro (xaus.com): respuesta no-JSON — HTTP {r.status_code} | {(r.text or '')[:200]!r} | {e}")
+            return None
         precio = data.get("spot_usd_oz")
         return float(precio) if precio else None
     except Exception:
