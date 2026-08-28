@@ -39,7 +39,7 @@ PARES = [
     "APTUSDT","ARKMUSDT","BLURUSDT","GMTUSDT","IMXUSDT",
     "JASMYUSDT","JTOUSDT","KASUSDT","MASKUSDT",
     "ONDOUSDT","PYTHUSDT","ROSEUSDT","SSVUSDT",
-    "STRKUSDT","SUPERUSDT","TWTUSDT","UMAUSDT","WUSDT",
+    "STRKUSDT","SUPERUSDT","TWTUSDT","WUSDT",
     "XAIUSDT","ZETAUSDT","ZRXUSDT","OPUSDT",
     # 7 pares nuevos (reemplazan RNDR, 1000SHIB, CYBER, DYDX, MINA, 1000BONK, OP)
     # Seleccionados por liquidez y disponibilidad confirmada en Pionex
@@ -805,17 +805,13 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
                 "bono_btc_lateral": bono_btc_lateral, "score_sin_bono_lateral": score_sin_bono_lateral,
                 "movimiento_atr": sombra_movimiento_atr}
 
-    # 17/08: la señal calificó (score>=11) — recién ACÁ vale la pena
-    # loguear el detalle completo de la cascada de precio (fuente que
-    # respondió + valor), para no saturar los logs con los ~90 pares que
-    # no califican en cada ciclo. Consulta extra (no reemplaza el precio
-    # ya usado arriba, es solo para dejar rastro diagnóstico) — caso real
-    # que motivó esto: XMRUSDT abrió con un rango totalmente desconectado
-    # del precio real, sin ningún rastro de qué fuente dio el dato malo.
-    try:
-        get_precio(par, verbose=True)
-    except Exception as e:
-        print(f"⚠️ {par}: falló el logging verbose de precio — {e}")
+    # 28/08 (Juanjo) — ELIMINADO el logging verbose de precio (era una
+    # consulta EXTRA a la cascada, solo para diagnóstico, motivada
+    # específicamente por el caso de XMRUSDT). Desde que XMR se sacó de
+    # la lista de pares, este diagnóstico ya no tiene el propósito
+    # original — y con más candidatos calificando ahora (filtros
+    # relajados), se había convertido en tráfico evitable a la cascada
+    # justo cuando se está tratando de reducir carga general.
 
     # 27/08 — máximo subido de 16 a 19: +1 por corregir el escalonado de
     # volumen (ahora llega a 2, antes tope 1), +1 por el bono de

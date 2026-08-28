@@ -285,6 +285,24 @@ def abrir_lote(senal_tipo, direccion, precio_entrada):
                     db.abrir_paxg_simulacion(combinacion, senal_tipo, riesgo, apal, tp, direccion, precio_entrada, sl_pct=valor_sl)
 
 
+def _avisar_telegram_paxg(msg: str):
+    """
+    28/08 (Juanjo) — caso real: PAXG nunca mandaba NADA a Telegram, ni
+    siquiera los fallos de apertura con plata real — todo quedaba
+    únicamente en los logs de Railway, invisible en el chat. Import
+    diferido (adentro de la función, no arriba del archivo) para evitar
+    el ciclo: main.py importa paxg_bot, así que paxg_bot no puede
+    importar main a nivel de módulo sin crear una dependencia circular
+    — a esta altura (la función ya se está EJECUTANDO, no cargando)
+    main.py ya terminó de importar todo, así que funciona bien.
+    """
+    try:
+        import main
+        main.enviar_telegram(msg)
+    except Exception as e:
+        print(f"⚠️ No se pudo avisar por Telegram (PAXG): {e}")
+
+
 def _abrir_paxg_real(direccion: str, precio_entrada: float):
     """
     23/08 (Juanjo) — Apertura REAL de PAXG/BTC. Por cada TP en
@@ -335,12 +353,18 @@ def _abrir_paxg_real(direccion: str, precio_entrada: float):
                 combinacion = f"B_real_TP{tp:g}_sl16_15x"
                 db.guardar_senal_paxg_real(combinacion, "B", PAXG_APALANCAMIENTO_REAL, tp, direccion,
                                             precio_entrada, PAXG_SL_REAL_PCT, bu_order_id, capital_btc_operacion)
-                print(f"✅ PAXG real abierta: {combinacion} — {capital_btc_operacion} BTC, bu_order_id={bu_order_id}")
+                msg = f"✅ PAXG real abierta: {combinacion} — {capital_btc_operacion} BTC, bu_order_id={bu_order_id}"
+                print(msg)
+                _avisar_telegram_paxg(msg)
                 return  # 26/08: máximo 1 por ronda — corta apenas abre una, no intenta el otro TP
             else:
-                print(f"⚠️ PAXG real: Pionex no devolvió buOrderId para TP{tp:g} — {resp}")
+                msg = f"⚠️ PAXG real: Pionex no devolvió buOrderId para TP{tp:g} — {resp}"
+                print(msg)
+                _avisar_telegram_paxg(msg)
         except Exception as e:
-            print(f"⚠️ PAXG real: falló la apertura para TP{tp:g} — {e}")
+            msg = f"⚠️ PAXG real: falló la apertura para TP{tp:g} — {e}"
+            print(msg)
+            _avisar_telegram_paxg(msg)
 
 
 def _evaluar_factores_tecnicos_paxg(direccion: str) -> dict:
@@ -540,6 +564,10 @@ def monitorear_paxg_real():
                 try:
                     pionex_api.cerrar_grilla_futuros(op["bu_order_id"], nota=f"PAXG real: trailing — pico {mejor:+.2f}%, piso {piso:+.2f}%")
                     db.cerrar_senal_paxg_real(op["id"], resultado_actual, motivo="trailing_escalonado")
-                    print(f"✅ PAXG real cerrada por trailing: {op['combinacion']} — pico {mejor:+.2f}%, cerrada en {resultado_actual:+.2f}%")
+                    msg = f"✅ PAXG real cerrada por trailing: {op['combinacion']} — pico {mejor:+.2f}%, cerrada en {resultado_actual:+.2f}%"
+                    print(msg)
+                    _avisar_telegram_paxg(msg)
                 except Exception as e:
-                    print(f"⚠️ PAXG real {op['combinacion']}: tocó el trailing pero falló el cierre — {e} — REVISAR YA")
+                    msg = f"🚨 PAXG real {op['combinacion']}: tocó el trailing pero falló el cierre — {e} — REVISAR YA"
+                    print(msg)
+                    _avisar_telegram_paxg(msg)

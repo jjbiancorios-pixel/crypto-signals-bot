@@ -1052,7 +1052,19 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
     # requests.post directo se saltaba ese control.
     with _pionex_write_lock:
         resp = _session.post(url, headers=headers, data=body_json, timeout=15)
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception as e:
+            # 28/08 (Juanjo) — caso real PAXG: 2 fallos de apertura (TP1
+            # y TP2) mostraron solo "Expecting value..." genérico, sin
+            # código HTTP — rodeados de varios 429 confirmados en el
+            # mismo tramo de logs, pero sin poder confirmar que ESTE
+            # fallo puntual también lo fuera. Mismo patrón que ya
+            # corregimos en consultar_orden/obtener_precio_pionex_directo
+            # /obtener_balance_cuenta — faltaba acá, la función más
+            # crítica de todas (la que abre la orden real).
+            print(f"⚠️ crear_grilla_futuros({par}): respuesta no-JSON — HTTP {resp.status_code} | primeros 200 caracteres: {(resp.text or '')[:200]!r} | error: {e}")
+            raise
 
 
 def calcular_sl_atr(atr_pct: float, multiplo: float = 3.0, piso_minimo: float = 15.0) -> float:
