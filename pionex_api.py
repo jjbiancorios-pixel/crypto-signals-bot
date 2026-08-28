@@ -228,6 +228,15 @@ def consultar_orden(bu_order_id: str) -> dict:
     """
     GET /futuresGrid/order — trae el estado completo del bot de grilla:
     liquidationPrice (real), riskStatus, marginStatus, marginBalance, position, etc.
+
+    27/08 (Juanjo) — caso real: EGLDUSDT/ZRXUSDT/STXUSDT fallaban cada
+    minuto desde medianoche con "Expecting value: line 1 column 1
+    (char 0)" — resp.json() explotando sobre una respuesta vacía o no-
+    JSON, SIN NINGÚN dato de diagnóstico (ni el código de status HTTP,
+    ni el texto real de la respuesta). Ahora se captura y se loguea el
+    detalle real ANTES de fallar, para poder entender qué está pasando
+    la próxima vez — un error genérico repetido cada minuto sin ningún
+    dato nuevo no ayuda a diagnosticar nada.
     """
     path = "/api/v1/bot/orders/futuresGrid/order"
     query = f"buOrderId={bu_order_id}"
@@ -239,7 +248,14 @@ def consultar_orden(bu_order_id: str) -> dict:
     }
     url = f"{PIONEX_BASE_URL}{path}?{query}&timestamp={timestamp}"
     resp = _session.get(url, headers=headers, timeout=15)
-    return resp.json()
+    try:
+        return resp.json()
+    except Exception as e:
+        texto_crudo = (resp.text or "")[:200]
+        raise RuntimeError(
+            f"consultar_orden({bu_order_id}) — respuesta no-JSON. "
+            f"HTTP {resp.status_code} | primeros 200 caracteres: {texto_crudo!r} | error original: {e}"
+        )
 
 
 def obtener_balance_cuenta() -> float:

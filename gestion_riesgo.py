@@ -37,6 +37,13 @@ MAX_POSICIONES_SIMULTANEAS = 12  # 21/08: 8->12 (Juanjo) — con capital al 5% y
 MAX_ATASCADAS_RIESGO = 1
 MAX_APERTURAS_POR_CICLO = 3  # 20/08: subido de 2 a 3 (Juanjo) — sin cambios en esta actualización, queda en 3 aunque el tope de simultáneas subió a 8
 STOP_LOSS_PCT = -15  # v17: techo absoluto INCONDICIONAL — antes -20%, reemplazado por el esquema de checkpoints. Este chequeo queda como RED DE SEGURIDAD (el cierre real de -15% lo protege el SL nativo de Pionex, mucho más rápido que nuestro monitoreo de 1 min — esto es un backup por si esa protección fallara).
+
+# 27/08 — contador de fallos consecutivos de consultar_orden por
+# bu_order_id, para no spamear Telegram con el mismo aviso sin
+# información nueva cada minuto (ver monitorear_zonas_riesgo). Vive en
+# memoria — se resetea solo si el proceso reinicia, lo cual es
+# razonable (un reinicio es una oportunidad natural de volver a avisar).
+_fallos_consultar_cierre = {}
 # v17 — Checkpoints de pérdida CON análisis técnico (no solo magnitud):
 # en -6/-9/-12%, se evalúan 4 factores; si se cumplen 3 de 4, se mantiene
 # hasta el próximo checkpoint; si 2 o menos, se cierra ahí mismo. -15% es
@@ -649,8 +656,19 @@ def monitorear_zonas_riesgo(capital_total: float = CAPITAL_TOTAL_USD) -> dict:
         # chequeando zona de riesgo sobre una operación que ya no existe.
         try:
             estado_cierre = pionex_api.esta_cerrada(bu_order_id)
+            _fallos_consultar_cierre.pop(bu_order_id, None)  # se recuperó, resetear el contador
         except Exception as e:
-            acciones.append(f"⚠️ {par}: error consultando cierre ({e})")
+            # 27/08 (Juanjo) — caso real: EGLDUSDT/ZRXUSDT/STXUSDT
+            # repitiendo el MISMO error cada minuto desde medianoche, sin
+            # ningún dato nuevo — puro ruido en Telegram sin ayudar a
+            # diagnosticar nada. Ahora solo avisa en el 1er fallo, y
+            # después cada 15 minutos (15, 30, 45...) mientras persista —
+            # sigue reintentando cada minuto igual, solo se calla el
+            # aviso repetido.
+            _fallos_consultar_cierre[bu_order_id] = _fallos_consultar_cierre.get(bu_order_id, 0) + 1
+            n_fallos = _fallos_consultar_cierre[bu_order_id]
+            if n_fallos == 1 or n_fallos % 15 == 0:
+                acciones.append(f"⚠️ {par}: error consultando cierre, van {n_fallos} intento(s) seguidos fallando ({e})")
             continue
 
         if estado_cierre.get("cerrada"):
