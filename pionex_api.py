@@ -43,6 +43,35 @@ PIONEX_API_SECRET = os.environ.get("PIONEX_API_SECRET", "")
 # persistente, la conexión queda "caliente" entre llamadas.
 _session = requests.Session()
 
+# 28/08 (Juanjo) — caso real: decenas de pares distintos (SCR, ACE, STX,
+# JASMY, SUPER, ENA, RUNE...) fallando con HTTP 429 (Too Many Requests)
+# desde el arranque del día 28 — mucho más amplio que solo las 3
+# posiciones abiertas que veníamos viendo, confirma que el límite de
+# Pionex se está superando de forma GENERAL, no solo por el chequeo de
+# posiciones. Probablemente agravado por tener ahora más candidatos
+# calificando (menos filtros duros, más bonos de score) — cada uno
+# dispara su propia consulta de precio para el chequeo de deriva antes
+# de abrir, sumado a todo lo demás que ya consultaba.
+#
+# En vez de seguir parchando lugar por lugar, se intercepta la llamada
+# de red de más bajo nivel de la sesión (_session.request, que .get() y
+# .post() usan internamente) para exigir un intervalo mínimo entre
+# CUALQUIER consulta a Pionex, sin importar qué función la origine.
+_rate_limit_lock = threading.Lock()
+_ultimo_llamado_pionex = [0.0]
+INTERVALO_MINIMO_PIONEX = 0.25  # 250ms entre consultas = máx. 4/segundo
+
+_request_original = _session.request
+def _request_con_limite(*args, **kwargs):
+    with _rate_limit_lock:
+        ahora = time.time()
+        espera = INTERVALO_MINIMO_PIONEX - (ahora - _ultimo_llamado_pionex[0])
+        if espera > 0:
+            time.sleep(espera)
+        _ultimo_llamado_pionex[0] = time.time()
+    return _request_original(*args, **kwargs)
+_session.request = _request_con_limite
+
 # 27/08 (Juanjo, documento de diagnóstico BOT_INTERNAL_ERROR) — candado
 # global para SERIALIZAR toda escritura hacia Pionex (crear, cerrar,
 # reforzar margen, modificar SL) sobre la MISMA cuenta. Causa #7 del
@@ -940,21 +969,23 @@ def crear_grilla_futuros(par: str, top: float, bottom: float, row: int,
         "Content-Type": "application/json",
     }
     url = f"{PIONEX_BASE_URL}{path}?timestamp={timestamp}"
-    # 26/08 (Juanjo, PRUEBA #2) — cambiado de _session.post (sesión HTTP
-    # persistente, agregada 19-20/08) a requests.post directo (una
-    # conexión nueva cada vez, como en la versión previa a v16) — SOLO
-    # acá, en la creación real. Prueba #1 (sacar lossStop) NO resolvió
-    # el BOT_INTERNAL_ERROR recurrente (INJ/NEAR/ZRX/ENS), se revirtió.
+    # 26/08 (Juanjo, PRUEBA #2) — se había cambiado de _session.post a
+    # requests.post directo, sin confirmar mejora clara.
     #
-    # 27/08 (Juanjo, PRUEBA #3, documento de diagnóstico oficial) —
-    # sumado el candado global _pionex_write_lock (causa #7 del
-    # documento: condición de carrera si el bot dispara varias
-    # escrituras casi simultáneas sobre la misma cuenta). Convive con la
-    # prueba #2 (sesión directa) — son 2 mitigaciones distintas, no se
-    # pisan entre sí. Si ninguna de las 3 pruebas resuelve el error,
-    # replantear el diagnóstico de fondo con Juanjo.
+    # 27/08 (Juanjo, PRUEBA #3) — candado global _pionex_write_lock
+    # agregado, tampoco confirmó mejora por sí solo.
+    #
+    # 28/08 (Juanjo) — REVERTIDO a _session.post: apareció evidencia
+    # mucho más concreta que las 3 pruebas anteriores — decenas de pares
+    # distintos fallando con HTTP 429 (Too Many Requests) desde el
+    # arranque del día. Esto es lo que mejor explica el patrón real
+    # (incluido el BOT_INTERNAL_ERROR, que un límite de solicitudes
+    # alcanzado también puede disparar en otros endpoints). Se vuelve a
+    # la sesión para que esta llamada quede cubierta por el nuevo
+    # limitador de velocidad global (_rate_limit_lock, ver arriba) —
+    # requests.post directo se saltaba ese control.
     with _pionex_write_lock:
-        resp = requests.post(url, headers=headers, data=body_json, timeout=15)
+        resp = _session.post(url, headers=headers, data=body_json, timeout=15)
         return resp.json()
 
 
