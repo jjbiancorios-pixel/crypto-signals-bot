@@ -44,6 +44,12 @@ STOP_LOSS_PCT = -15  # v17: techo absoluto INCONDICIONAL — antes -20%, reempla
 # memoria — se resetea solo si el proceso reinicia, lo cual es
 # razonable (un reinicio es una oportunidad natural de volver a avisar).
 _fallos_consultar_cierre = {}
+
+# 27/08 — contador de ciclos para el chequeo rápido escalonado (ver
+# chequeo_rapido_ganancia_v17): posiciones lejos del trailing se
+# chequean 1 de cada 5 ciclos, no todos — reduce la carga de consultas
+# a Pionex sin afectar la velocidad donde el trailing sí importa.
+_contador_ciclos_chequeo_rapido = 0
 # v17 — Checkpoints de pérdida CON análisis técnico (no solo magnitud):
 # en -6/-9/-12%, se evalúan 4 factores; si se cumplen 3 de 4, se mantiene
 # hasta el próximo checkpoint; si 2 o menos, se cierra ahí mismo. -15% es
@@ -508,9 +514,38 @@ def chequeo_rapido_ganancia_v17() -> list:
     """
     acciones = []
     abiertas = db.operaciones_abiertas_con_bu_order()
+
+    # 27/08 (Juanjo) — reducir carga de consultas a Pionex sin afectar
+    # la velocidad del trailing: caso real, con varias posiciones
+    # abiertas a la vez, empezamos a recibir HTTP 429 (Too Many
+    # Requests) — EGLD/ZRX/STX llevaban 105 minutos fallando seguido,
+    # y una señal nueva (FTM) ni siquiera pudo confirmar precio.
+    #
+    # Una posición que TODAVÍA no cruzó el umbral de trailing (4%) no
+    # tiene nada que este chequeo cada 2seg pueda proteger — el SL
+    # nativo de Pionex ya la cubre por su cuenta, sin depender de
+    # nuestro monitoreo. Solo las que YA superaron el 4% necesitan la
+    # cadencia completa, porque ahí el trailing puede tener que actuar
+    # en cualquier momento. Se chequean 1 de cada 5 ciclos (~10seg en
+    # vez de 2seg) mientras estén por debajo del umbral — apenas cruzan
+    # el 4%, pasan a chequearse SIEMPRE, sin ningún cambio de velocidad
+    # ahí. Usa el últimomejor_resultado_pct YA GUARDADO (sin costo de
+    # API extra) para decidir, no una consulta nueva.
+    global _contador_ciclos_chequeo_rapido
+    _contador_ciclos_chequeo_rapido = (_contador_ciclos_chequeo_rapido + 1) % 5
+
     for op in abiertas:
         par = op.get("par", "?")
         bu_order_id = op.get("bu_order_id")
+
+        mejor_previo = op.get("mejor_resultado_pct")
+        en_zona_trailing = mejor_previo is not None and mejor_previo >= pionex_api.UMBRAL_TRAILING_SIMPLE
+        # mejor_previo is None = todavía no se chequeó ni una vez (recién
+        # abierta) — NUNCA se saltea ese primer chequeo, para empezar a
+        # trackear el pico cuanto antes.
+        if mejor_previo is not None and not en_zona_trailing and _contador_ciclos_chequeo_rapido != 0:
+            continue  # se salta este ciclo — todavía lejos del trailing, no urgente
+
         try:
             desglose = pionex_api.calcular_resultado_desglosado(bu_order_id, par=par, capital_total_real=op.get("capital_asignado"))
             resultado_actual = desglose["total_pct"] if desglose else None
