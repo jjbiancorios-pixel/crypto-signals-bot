@@ -377,12 +377,51 @@ def calc_stoch_rsi(s, p=14):
     return float(((rsi-mn)/(mx-mn+1e-10)*100).iloc[-1])
 
 def patron_vela(df):
+    if len(df) < 3:
+        return "NEUTRO"  # sin suficientes velas para patrones de 3 (Estrella/Harami)
     c,o=df["close"].iloc[-1],df["open"].iloc[-1]
     h,l=df["high"].iloc[-1],df["low"].iloc[-1]
     c1,o1=df["close"].iloc[-2],df["open"].iloc[-2]
+    h1,l1=df["high"].iloc[-2],df["low"].iloc[-2]
+    c2,o2=df["close"].iloc[-3],df["open"].iloc[-3]
     rng=h-l
     if rng==0: return "NEUTRO"
     cuerpo=abs(c-o); mi=min(c,o)-l; ms=h-max(c,o)
+
+    # 27/08 (Juanjo) — patrones de 3 velas, agregados como BONO de score
+    # (nunca filtro duro, ver definición de es_pattern_fuerte más abajo).
+    # Criterios estrictos, definición técnica estándar — NO aproximaciones
+    # sueltas, para no sumar puntos a ruido:
+    #   Estrella de la mañana: vela 1 bajista fuerte, vela 2 con cuerpo
+    #   chico (indecisión, gap opcional no exigido por simplicidad de
+    #   datos de cripto 24/7), vela 3 alcista fuerte que recupera al
+    #   menos la mitad del cuerpo de la vela 1.
+    cuerpo1 = abs(c1-o1); cuerpo2 = abs(c2-o2)
+    rng1 = h1-l1
+    rng2 = df["high"].iloc[-3]-df["low"].iloc[-3]
+    # 27/08 (FIX) — "vela2_chica" mide la vela DEL MEDIO (c1/o1, la de
+    # indecisión) con SU PROPIO rango (rng1) — antes usaba por error
+    # cuerpo2/rng2 (la vela más vieja), lo que nunca detectaba el
+    # patrón bien.
+    vela2_chica = rng1>0 and cuerpo1/rng1 < 0.35
+    vela1_bajista_fuerte = rng2>0 and c2<o2 and cuerpo2/rng2>0.5
+    vela1_alcista_fuerte = rng2>0 and c2>o2 and cuerpo2/rng2>0.5
+    if vela1_bajista_fuerte and vela2_chica and c>o and cuerpo/rng>0.5 and c > (o2+c2)/2:
+        return "ESTRELLA_MANANA"
+    if vela1_alcista_fuerte and vela2_chica and c<o and cuerpo/rng>0.5 and c < (o2+c2)/2:
+        return "ESTRELLA_TARDE"
+
+    # Harami: vela 1 con cuerpo grande, vela 2 completamente CONTENIDA
+    # dentro del cuerpo de la vela 1 (indecisión tras un movimiento
+    # fuerte) — señal de posible giro, más débil que las de reversión
+    # de arriba, se pondera menos.
+    cuerpo_grande_1 = rng1>0 and cuerpo1/rng1>0.5
+    contenida = max(o,c)<max(o1,c1) and min(o,c)>min(o1,c1)
+    if cuerpo_grande_1 and contenida and c1>o1:
+        return "HARAMI_BAJ"  # vela previa alcista + indecisión -> posible giro a la baja
+    if cuerpo_grande_1 and contenida and c1<o1:
+        return "HARAMI_ALC"  # vela previa bajista + indecisión -> posible giro al alza
+
     if cuerpo/rng<0.1: return "DOJI"
     if mi>2*cuerpo and c>o and c1<o1: return "MARTILLO_ALC"
     if ms>2*cuerpo and c<o and c1>o1: return "SHOOTING_BAJ"
@@ -391,6 +430,44 @@ def patron_vela(df):
     if c>o and cuerpo/rng>0.6: return "VELA_ALC"
     if c<o and cuerpo/rng>0.6: return "VELA_BAJ"
     return "NEUTRO"
+
+def cerca_de_soporte_resistencia(df, precio, es_largo, ventana=40, tolerancia_pct=0.5):
+    """
+    27/08 (Juanjo) — Detecta si el precio actual está cerca de un
+    soporte (para LARGO) o resistencia (para CORTO) GENUINO — un
+    máximo/mínimo que el precio ya tocó y respetó al menos 2 veces en
+    las últimas `ventana` velas, no cualquier máximo/mínimo de paso.
+    Exigir 2+ toques evita que cualquier extremo de una sola vela
+    cuente como "nivel relevante" — sin esto, el bono sumaría puntos
+    casi siempre, sin aportar información real.
+
+    Devuelve True solo si:
+    1. Existe un nivel (máximo o mínimo, según la dirección) tocado 2+
+       veces en la ventana reciente.
+    2. El precio actual está DENTRO de tolerancia_pct de ese nivel.
+    3. La dirección tiene sentido: LARGO cerca de un SOPORTE (mínimo
+       respetado), CORTO cerca de una RESISTENCIA (máximo respetado).
+    """
+    if len(df) < ventana:
+        return False
+    recientes = df.iloc[-ventana:]
+
+    if es_largo:
+        # Buscar mínimos locales (soporte): agrupar lows parecidos entre sí
+        candidatos = recientes["low"].values
+    else:
+        candidatos = recientes["high"].values
+
+    for nivel in candidatos:
+        if nivel <= 0:
+            continue
+        toques = sum(1 for v in candidatos if abs(v - nivel) / nivel * 100 <= tolerancia_pct)
+        if toques >= 2:
+            distancia_pct = abs(precio - nivel) / nivel * 100
+            if distancia_pct <= tolerancia_pct:
+                return True
+    return False
+
 
 def correlacion_propia(df15, btc_mov):
     mov = (df15["close"].iloc[-1]-df15["close"].iloc[-4])/df15["close"].iloc[-4]*100
@@ -662,13 +739,41 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         score+=1; razones.append(f"✅ Movimiento propio: {corr['mov_propio']}%")
 
     # Patrones confirman dirección específica
-    patrones_alc=["MARTILLO_ALC","ENGULFING_ALC","VELA_ALC"]
-    patrones_baj=["SHOOTING_BAJ","ENGULFING_BAJ","VELA_BAJ"]
+    patrones_alc=["MARTILLO_ALC","ENGULFING_ALC","VELA_ALC","ESTRELLA_MANANA"]
+    patrones_baj=["SHOOTING_BAJ","ENGULFING_BAJ","VELA_BAJ","ESTRELLA_TARDE"]
     if (pat in patrones_alc and es_largo) or (pat in patrones_baj and not es_largo):
         score+=2; razones.append(f"✅ Patrón confirma: {pat}")
     elif pat in patrones_alc or pat in patrones_baj:
         razones.append(f"⚠️ Patrón {pat} contradice la señal")
     elif pat=="DOJI": score+=1; razones.append(f"⚡ Doji")
+    # 27/08 — Harami aparte, con MENOR peso que los de arriba: es una
+    # señal de indecisión (posible giro), no una confirmación de
+    # reversión tan directa como el resto — se pondera +1, no +2.
+    elif (pat=="HARAMI_ALC" and es_largo) or (pat=="HARAMI_BAJ" and not es_largo):
+        score+=1; razones.append(f"⚡ Patrón {pat} (indecisión, posible giro a favor)")
+
+    # 27/08 (Juanjo) — bono de soporte/resistencia: solo suma si hay un
+    # nivel GENUINO (2+ toques recientes) y el precio está realmente
+    # cerca, en la dirección correcta. Nunca resta ni bloquea si no se
+    # cumple — es estrictamente aditivo, para no sumarse a los filtros
+    # que ya limitan bastante la selección.
+    if cerca_de_soporte_resistencia(df15, precio, es_largo):
+        score+=1
+        razones.append(f"✅ Cerca de {'soporte' if es_largo else 'resistencia'} respetado 2+ veces")
+
+    # 27/08 (Juanjo) — bono de persistencia del RSI: mismo espíritu que
+    # el resto (aditivo, nunca bloquea) — si el RSI YA estaba en la
+    # misma zona (sobreventa/sobrecompra) la vela anterior, no es un
+    # pico de una sola vela, es más consistente. Mismo error que
+    # cometimos con la persistencia de la señal completa (esa si
+    # bloqueaba, por eso la revertimos) — acá NUNCA descarta, solo suma.
+    try:
+        rsi15_anterior = calc_rsi(df15["close"].iloc[:-1])
+        if (rsi15<29 and es_largo and rsi15_anterior<29) or (rsi15>71 and not es_largo and rsi15_anterior>71):
+            score+=1
+            razones.append(f"✅ RSI sostenido en zona (no es pico de 1 vela)")
+    except Exception:
+        pass
 
     if df1h is not None and len(df1h)>=20:
         e20_1h=calc_ema(df1h["close"],20); r1h=calc_rsi(df1h["close"])
@@ -678,8 +783,15 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         else:
             razones.append(f"⚠️ 1h en contra de {direccion_cand} (RSI:{r1h:.0f})")
 
-    if vol_r>=1.2: score+=1; razones.append(f"✅ Volumen: {vol_r:.1f}x")
-    elif vol_r>=0.7: score+=1; razones.append(f"⚡ Volumen normal: {vol_r:.1f}x")
+    # 27/08 (FIX) — antes daba +1 en AMBOS casos (≥1.2x Y ≥0.7x), sin
+    # distinguir volumen alto de apenas normal. Ahora escalonado de
+    # verdad: +2 en el mismo umbral que el filtro duro de volumen
+    # (1.5x, así un volumen realmente alto se refleja también en el
+    # score, no solo en pasar o no el filtro), +1 para volumen moderado
+    # (1.0x-1.5x). Por debajo de 1.0x no suma nada — ni siquiera se
+    # acerca al promedio de la moneda.
+    if vol_r>=1.5: score+=2; razones.append(f"✅ Volumen alto: {vol_r:.1f}x")
+    elif vol_r>=1.0: score+=1; razones.append(f"⚡ Volumen moderado: {vol_r:.1f}x")
 
     score_sin_bono_lateral = score - 1 if bono_btc_lateral else score  # 18/08: para comparar el viernes vs. el escenario sin el cambio
     if score<MIN_SCORE_ALTA:
@@ -705,7 +817,13 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
     except Exception as e:
         print(f"⚠️ {par}: falló el logging verbose de precio — {e}")
 
-    pct=score/16*100
+    # 27/08 — máximo subido de 16 a 19: +1 por corregir el escalonado de
+    # volumen (ahora llega a 2, antes tope 1), +1 por el bono de
+    # soporte/resistencia nuevo, +1 por el bono de persistencia de RSI
+    # nuevo. MIN_SCORE_ALTA se queda en 11 a propósito (no se sube
+    # proporcional) — el objetivo de estos bonos es abrir MÁS caminos
+    # para llegar al mismo estándar de siempre, no subir la vara.
+    pct=score/19*100
     direccion="📈 LARGO" if es_largo else "📉 CORTO"
 
     # Solo guardamos datos relevantes — sin grid propio (usamos parámetros de Pionex)
@@ -854,7 +972,7 @@ def analizar_par(par, btc, forzar_corto=False, forzar_largo=False):
         # sin bloqueo real: ya no se descarta la señal, sigue de largo
 
     return {
-        "par":par,"precio":precio,"score":score,"score_max":16,"pct":pct,
+        "par":par,"precio":precio,"score":score,"score_max":19,"pct":pct,
         "prob":"🟢 ALTA","prob_n":3,"direccion":direccion,"razones":razones,
         "atr_pct":atr_pct,"horas_1pct":1.0,  # estimado conservador sin grid propio
         "precio_max_largo":precio_max_largo,
