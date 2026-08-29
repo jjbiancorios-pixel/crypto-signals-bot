@@ -303,6 +303,24 @@ def _avisar_telegram_paxg(msg: str):
         print(f"⚠️ No se pudo avisar por Telegram (PAXG): {e}")
 
 
+# 29/08 (Juanjo) — caso real: con la apertura de PAXG fallando seguido
+# (mismo problema de conectividad con Pionex que afecta al resto del
+# sistema), el aviso por Telegram del punto anterior generó "cantidad
+# de mensajes" — cada intento manda hasta 2 avisos (TP1 y TP2), cada 15
+# min que la señal B dispare. Mismo criterio ya usado para "error
+# consultando cierre" y el recálculo de capital: avisa la 1ra vez,
+# después cada 15 intentos — sigue reintentando la apertura real cada
+# vez igual, solo se calla el aviso repetido.
+_fallos_apertura_paxg = 0
+
+
+def _avisar_apertura_paxg_con_throttle(msg: str):
+    global _fallos_apertura_paxg
+    _fallos_apertura_paxg += 1
+    if _fallos_apertura_paxg == 1 or _fallos_apertura_paxg % 15 == 0:
+        _avisar_telegram_paxg(f"{msg}\n(van {_fallos_apertura_paxg} intento(s) de apertura fallando seguido)")
+
+
 def _abrir_paxg_real(direccion: str, precio_entrada: float):
     """
     23/08 (Juanjo) — Apertura REAL de PAXG/BTC. Por cada TP en
@@ -356,15 +374,17 @@ def _abrir_paxg_real(direccion: str, precio_entrada: float):
                 msg = f"✅ PAXG real abierta: {combinacion} — {capital_btc_operacion} BTC, bu_order_id={bu_order_id}"
                 print(msg)
                 _avisar_telegram_paxg(msg)
+                global _fallos_apertura_paxg
+                _fallos_apertura_paxg = 0  # se recuperó, resetear
                 return  # 26/08: máximo 1 por ronda — corta apenas abre una, no intenta el otro TP
             else:
                 msg = f"⚠️ PAXG real: Pionex no devolvió buOrderId para TP{tp:g} — {resp}"
                 print(msg)
-                _avisar_telegram_paxg(msg)
+                _avisar_apertura_paxg_con_throttle(msg)
         except Exception as e:
             msg = f"⚠️ PAXG real: falló la apertura para TP{tp:g} — {e}"
             print(msg)
-            _avisar_telegram_paxg(msg)
+            _avisar_apertura_paxg_con_throttle(msg)
 
 
 def _evaluar_factores_tecnicos_paxg(direccion: str) -> dict:
