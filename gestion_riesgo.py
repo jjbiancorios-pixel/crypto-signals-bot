@@ -45,6 +45,10 @@ STOP_LOSS_PCT = -15  # v17: techo absoluto INCONDICIONAL — antes -20%, reempla
 # razonable (un reinicio es una oportunidad natural de volver a avisar).
 _fallos_consultar_cierre = {}
 
+# 29/08 — contador de fallos consecutivos de la consulta de balance
+# (recálculo diario de capital) — mismo patrón que _fallos_consultar_cierre.
+_fallos_recalculo_capital = 0
+
 # 27/08 — contador de ciclos para el chequeo rápido escalonado (ver
 # chequeo_rapido_ganancia_v17): posiciones lejos del trailing se
 # chequean 1 de cada 5 ciclos, no todos — reduce la carga de consultas
@@ -1050,9 +1054,23 @@ def intentar_recalculo_diario(forzar: bool = False) -> str:
     una sola operación. Sigue exigiendo que no haya operaciones abiertas
     (mismo motivo que el punto 2 — no recalcular a mitad de exposición).
 
+    29/08 (Juanjo) — caso real: con el bot en /pausar_todo durante DÍAS,
+    seguían llegando avisos de "falló la consulta de balance" cada 1-3
+    minutos, sin parar — /pausar_todo nunca frenaba esto (solo frenaba
+    generar_alertas). No tiene sentido recalcular capital mientras está
+    pausado — no se va a abrir ninguna posición nueva de todos modos.
+    Ahora se salta en silencio si está pausado y no fue forzado a mano.
+    Además, aunque NO esté pausado, si la consulta de balance sigue
+    fallando ciclo tras ciclo, ahora solo avisa la 1ra vez y después
+    cada 15 intentos — mismo criterio ya usado para "error consultando
+    cierre".
+
     Devuelve un string para loggear/avisar por Telegram, o None si no
     correspondía hacer nada este ciclo.
     """
+    if not forzar and db.esta_pausado_global():
+        return None  # bot pausado — no tiene sentido recalcular capital para posiciones que no se van a abrir
+
     if not forzar and db.obtener_capital_diario() is not None:
         return None  # ya se calculó hoy
 
@@ -1064,7 +1082,12 @@ def intentar_recalculo_diario(forzar: bool = False) -> str:
 
     capital_real = pionex_api.obtener_balance_cuenta()
     if capital_real is None:
-        return "⚠️ Recálculo diario de capital: falló la consulta de balance a Pionex, se reintenta en 1 min."
+        global _fallos_recalculo_capital
+        _fallos_recalculo_capital += 1
+        if _fallos_recalculo_capital == 1 or _fallos_recalculo_capital % 15 == 0:
+            return f"⚠️ Recálculo diario de capital: falló la consulta de balance a Pionex, van {_fallos_recalculo_capital} intento(s) seguidos fallando."
+        return None
+    _fallos_recalculo_capital = 0  # se recuperó, resetear el contador
 
     tamano_objetivo = round(capital_real * PCT_CAPITAL_POR_OPERACION, 2)
     reserva_inicial = round(capital_real * RESERVA_RECUPERO_PCT, 2)
