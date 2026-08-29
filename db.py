@@ -1112,11 +1112,23 @@ def _calcular_resumen(rows: list, capital_periodo: float = None) -> dict:
     todavía no hay capital_diario disponible), usa el cálculo viejo.
     """
     if not rows:
-        return {"n": 0, "n_pos": 0, "n_neg": 0, "n_abiertas": 0,
+        return {"n": 0, "n_pos": 0, "n_neg": 0, "n_abiertas": 0, "n_aperturas_fallidas": 0,
                 "gan_total": 0, "gan_prom": 0, "win_rate": 0,
                 "gan_total_sin": 0, "gan_prom_sin": 0, "win_rate_sin": 0}
 
-    cerradas = [r for r in rows if r["cerrado"] == 1 and r["resultado_pct"] is not None]
+    # 29/08 (Juanjo) — caso real: informe del 28/08 mostró "win rate 2.4%"
+    # con "Peor: +0.00%" — matemáticamente imposible si son perdedoras de
+    # verdad (una perdedora real tiene resultado NEGATIVO). Causa
+    # encontrada: cuando la apertura automática FALLA (nunca llegó a
+    # abrirse en Pionex), se cierra la señal con resultado_pct=0 a
+    # propósito (fix del 19/08, para no bloquear el par para siempre) —
+    # pero "resultado_pct <= 0" las contaba como PERDEDORAS reales,
+    # mezclando "nunca se abrió" con "se abrió y perdió". Ahora se
+    # excluyen de las estadísticas de ganadoras/perdedoras, y se cuentan
+    # aparte, visibles siempre.
+    aperturas_fallidas = [r for r in rows if r.get("motivo_cierre") == "apertura_fallida"]
+    cerradas = [r for r in rows if r["cerrado"] == 1 and r["resultado_pct"] is not None
+                and r.get("motivo_cierre") != "apertura_fallida"]
     abiertas = [r for r in rows if r["cerrado"] == 0]
     positivas = [r for r in cerradas if r["resultado_pct"] > 0]
     negativas = [r for r in cerradas if r["resultado_pct"] <= 0]
@@ -1145,6 +1157,7 @@ def _calcular_resumen(rows: list, capital_periodo: float = None) -> dict:
         "n_pos": len(positivas),
         "n_neg": len(negativas),
         "n_abiertas": len(abiertas),
+        "n_aperturas_fallidas": len(aperturas_fallidas),
         "n_rapidas": len(rapidas),
         "gan_total": gan_total,
         "gan_prom": round(gan_prom, 2),

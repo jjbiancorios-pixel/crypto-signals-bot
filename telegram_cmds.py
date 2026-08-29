@@ -302,6 +302,14 @@ def _fmt_resumen(r: dict, titulo: str) -> str:
         lineas.append("")
         lineas.append(f"⏳ Abiertas (sin cerrar aún): {r['n_abiertas']}")
 
+    # 29/08 (Juanjo) — aperturas fallidas, SEPARADAS de ganadoras/
+    # perdedoras (antes se contaban como "perdedoras" con resultado 0%,
+    # distorsionando el win rate real — caso real: 28/08 mostró 2.4% de
+    # win rate, casi todo eran intentos que nunca llegaron a abrirse).
+    if r.get("n_aperturas_fallidas", 0) > 0:
+        lineas.append("")
+        lineas.append(f"⚠️ Intentos de apertura que FALLARON (nunca se abrieron, no cuentan como operación): {r['n_aperturas_fallidas']}")
+
     return "\n".join(lineas)
 
 
