@@ -2127,12 +2127,30 @@ def completar_resultados_bingx(precio_actual: float, symbol: str = "BTC-USDT"):
     filas de hace ~1 min sin precio_1min_despues, y de hace ~5 min sin
     precio_5min_despues, y las completa con el precio de AHORA. Usa un
     margen de tolerancia de 30 seg (no hace falta el segundo exacto).
+
+    01/09 (Juanjo) — agregadas las ventanas de 2 y 3 minutos: con 1 y 5
+    min confirmado que el acierto EMPEORA con el tiempo (53% a 1min baja
+    a 51% a 5min en todos los umbrales), la pregunta que queda abierta es
+    si existe un punto intermedio donde el movimiento acumulado ya cubra
+    la comisión de BingX (0.10%) pero el acierto todavía no se haya
+    disuelto del todo — sin datos a 2-3min, no se puede saber. Mismo
+    mecanismo, mismas columnas nuevas agregadas con ALTER TABLE (seguro
+    llamarlo de más, no rompe si ya existen).
     """
     conn = _conn()
     cur = conn.cursor()
+    for columna in ("precio_2min_despues", "precio_3min_despues"):
+        try:
+            cur.execute(f"ALTER TABLE bingx_datos_log ADD COLUMN {columna} REAL")
+        except Exception:
+            pass
     ahora = datetime.now(TZ_ARG)
     v_1min_desde = (ahora - timedelta(seconds=75)).isoformat()
     v_1min_hasta = (ahora - timedelta(seconds=45)).isoformat()
+    v_2min_desde = (ahora - timedelta(seconds=135)).isoformat()
+    v_2min_hasta = (ahora - timedelta(seconds=105)).isoformat()
+    v_3min_desde = (ahora - timedelta(seconds=195)).isoformat()
+    v_3min_hasta = (ahora - timedelta(seconds=165)).isoformat()
     v_5min_desde = (ahora - timedelta(seconds=330)).isoformat()
     v_5min_hasta = (ahora - timedelta(seconds=270)).isoformat()
 
@@ -2140,6 +2158,14 @@ def completar_resultados_bingx(precio_actual: float, symbol: str = "BTC-USDT"):
         UPDATE bingx_datos_log SET precio_1min_despues = ?
         WHERE symbol = ? AND precio_1min_despues IS NULL AND timestamp BETWEEN ? AND ?
     """, (precio_actual, symbol, v_1min_desde, v_1min_hasta))
+    cur.execute("""
+        UPDATE bingx_datos_log SET precio_2min_despues = ?
+        WHERE symbol = ? AND precio_2min_despues IS NULL AND timestamp BETWEEN ? AND ?
+    """, (precio_actual, symbol, v_2min_desde, v_2min_hasta))
+    cur.execute("""
+        UPDATE bingx_datos_log SET precio_3min_despues = ?
+        WHERE symbol = ? AND precio_3min_despues IS NULL AND timestamp BETWEEN ? AND ?
+    """, (precio_actual, symbol, v_3min_desde, v_3min_hasta))
     cur.execute("""
         UPDATE bingx_datos_log SET precio_5min_despues = ?
         WHERE symbol = ? AND precio_5min_despues IS NULL AND timestamp BETWEEN ? AND ?
@@ -2155,11 +2181,17 @@ def resumen_umbral_imbalance(desde_fecha: str = None) -> list:
     desequilibrio (positivo -> predice suba, negativo -> predice baja),
     a 1 y a 5 minutos. Es la base para elegir el umbral óptimo con datos
     reales — no a ciegas ni con un número fijo de entrada.
+
+    01/09 — sumadas las ventanas de 2 y 3 minutos (ver
+    completar_resultados_bingx) — para encontrar si hay un punto
+    intermedio donde el movimiento acumulado ya cubra la comisión de
+    BingX antes de que el acierto se disuelva hacia el 50%.
     """
     conn = _conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT imbalance, precio, precio_1min_despues, precio_5min_despues
+        SELECT imbalance, precio, precio_1min_despues, precio_2min_despues,
+               precio_3min_despues, precio_5min_despues
         FROM bingx_datos_log WHERE imbalance IS NOT NULL
     """)
     filas = [dict(r) for r in cur.fetchall()]
@@ -2168,31 +2200,30 @@ def resumen_umbral_imbalance(desde_fecha: str = None) -> list:
         return []
 
     umbrales = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    ventanas = [
+        ("1m", "precio_1min_despues"), ("2m", "precio_2min_despues"),
+        ("3m", "precio_3min_despues"), ("5m", "precio_5min_despues"),
+    ]
     resumen = []
     for u in umbrales:
-        aciertos_1m = total_1m = aciertos_5m = total_5m = 0
-        for f in filas:
-            imb = f["imbalance"]
-            if imb is None or abs(imb) < u:
-                continue
-            prediccion = 1 if imb > 0 else -1
-            if f["precio_1min_despues"] is not None:
-                total_1m += 1
-                mov = f["precio_1min_despues"] - f["precio"]
+        fila_resumen = {"umbral": u}
+        for etiqueta, columna in ventanas:
+            aciertos = total = 0
+            for f in filas:
+                imb = f["imbalance"]
+                if imb is None or abs(imb) < u:
+                    continue
+                precio_despues = f.get(columna)
+                if precio_despues is None:
+                    continue
+                prediccion = 1 if imb > 0 else -1
+                total += 1
+                mov = precio_despues - f["precio"]
                 if (mov > 0 and prediccion == 1) or (mov < 0 and prediccion == -1):
-                    aciertos_1m += 1
-            if f["precio_5min_despues"] is not None:
-                total_5m += 1
-                mov = f["precio_5min_despues"] - f["precio"]
-                if (mov > 0 and prediccion == 1) or (mov < 0 and prediccion == -1):
-                    aciertos_5m += 1
-        resumen.append({
-            "umbral": u,
-            "n_1m": total_1m,
-            "acierto_1m_pct": round(aciertos_1m / total_1m * 100, 1) if total_1m else None,
-            "n_5m": total_5m,
-            "acierto_5m_pct": round(aciertos_5m / total_5m * 100, 1) if total_5m else None,
-        })
+                    aciertos += 1
+            fila_resumen[f"n_{etiqueta}"] = total
+            fila_resumen[f"acierto_{etiqueta}_pct"] = round(aciertos / total * 100, 1) if total else None
+        resumen.append(fila_resumen)
     return resumen
 
 

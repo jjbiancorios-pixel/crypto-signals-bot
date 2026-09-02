@@ -596,6 +596,11 @@ def _cmd_bingx() -> str:
     imbalance). Muestra el % de acierto real por umbral, calculado con
     datos propios — para elegir el umbral óptimo, no a ciegas. Modo
     sombra puro, sin operar nada.
+
+    01/09 (Juanjo) — sumadas las ventanas de 2 y 3 minutos: con 1 y 5min
+    ya confirmado que el acierto EMPEORA con el tiempo, la pregunta es si
+    hay un punto intermedio donde el movimiento acumulado cubra la
+    comisión de BingX (0.10%) antes de que el acierto se disuelva.
     """
     resumen = db.resumen_umbral_imbalance()
     if not resumen or all(r["n_1m"] == 0 for r in resumen):
@@ -606,10 +611,14 @@ def _cmd_bingx() -> str:
     for r in resumen:
         if r["n_1m"] == 0:
             continue
-        linea = f"Umbral {r['umbral']}: 1min {r['acierto_1m_pct']}% (n={r['n_1m']})"
-        if r["n_5m"]:
-            linea += f" | 5min {r['acierto_5m_pct']}% (n={r['n_5m']})"
-        lineas.append(linea)
+        partes = [f"1min {r['acierto_1m_pct']}% (n={r['n_1m']})"]
+        if r.get("n_2m"):
+            partes.append(f"2min {r['acierto_2m_pct']}% (n={r['n_2m']})")
+        if r.get("n_3m"):
+            partes.append(f"3min {r['acierto_3m_pct']}% (n={r['n_3m']})")
+        if r.get("n_5m"):
+            partes.append(f"5min {r['acierto_5m_pct']}% (n={r['n_5m']})")
+        lineas.append(f"Umbral {r['umbral']}: " + " | ".join(partes))
     n_minimo = min(r["n_1m"] for r in resumen if r["n_1m"] > 0)
     if n_minimo < 200:
         lineas.append(f"\n⚠️ El umbral con menos casos tiene n={n_minimo} — todavía no es confiable, ojo con sobre-interpretar.")

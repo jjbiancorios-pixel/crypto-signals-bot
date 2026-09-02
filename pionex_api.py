@@ -205,13 +205,20 @@ def _armar_body(par: str, top: float, bottom: float, row: int,
         "profitStopType": "profit_ratio",
         "profitStop": str(TP_FIJO_SIMPLE),
         "lossStopType": "profit_ratio",
-        # 26/08 — REVERTIDO: se había sacado este campo como prueba para
-        # descartar si causaba el BOT_INTERNAL_ERROR recurrente de
-        # Pionex (INJ/NEAR/ZRX/ENS). Juanjo confirmó que sacarlo NO
-        # resolvió el problema — se restaura tal como estaba. Próxima
-        # sospechosa a probar: la sesión HTTP persistente (_session vs.
-        # requests directo, ver más abajo).
-        "lossStop": str(sl_pct if sl_pct is not None else SL_INICIAL_SIMPLE),
+        # 29/08 (Juanjo) — BUG CRÍTICO CONFIRMADO Y CORREGIDO: sl_pct
+        # (calcular_sl_atr, y también PAXG_SL_REAL_PCT) vienen en
+        # formato "número de porcentaje" (ej. -15.0 para "-15%") — pero
+        # Pionex espera la FRACCIÓN DECIMAL (ej. -0.15), igual que
+        # TP_FIJO_SIMPLE=0.35 y SL_INICIAL_SIMPLE=-0.10. Sin dividir por
+        # 100, -15.0 se mandaba TAL CUAL — Pionex lo interpreta como
+        # -1500%, un SL que jamás se dispara en la práctica. Caso real
+        # que lo confirmó: captura de Pionex mostrando "SL 1500%" en una
+        # posición real. Desde el 23/08 (cuando se agregó el cálculo por
+        # ATR) hasta ahora, NINGUNA posición con este SL tuvo protección
+        # nativa real de Pionex — solo la de nuestro propio monitoreo.
+        # modificar_stop_loss() (más abajo) ya hacía esta división
+        # correctamente — acá faltaba.
+        "lossStop": str(sl_pct / 100 if sl_pct is not None else SL_INICIAL_SIMPLE),
     }
     if extra_margin_usdt and extra_margin_usdt > 0:
         # Margen de origen (dinámico): reservado desde la apertura, baja el
