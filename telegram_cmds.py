@@ -40,12 +40,13 @@ def inicializar_offset_telegram():
     se reseteaba a 0 en cada reinicio del bot. Con muchos redeploys
     seguidos (como pasó hoy, varias subidas en poco tiempo), el bot
     intentaba re-procesar TODO el historial de mensajes viejos desde el
-    inicio de la cuenta — dejando los comandos NUEVOS (ej. /ayuda) en
-    cola detrás de un backlog gigante, sin ningún error visible (cada
-    getUpdates individual funcionaba bien, solo que tardaba muchísimo en
-    llegar a lo reciente). Al arrancar, ahora se descartan los updates
-    viejos pendientes y se arranca escuchando solo desde el más reciente
-    — llamar UNA vez al inicio del bot, antes del loop principal.
+    inicio de la cuenta en cada arranque, dejando los comandos NUEVOS (ej.
+    /ayuda) en cola detrás de un backlog gigante, sin ningún error visible
+    (cada getUpdates individual funcionaba bien, solo que tardaba
+    muchísimo en llegar a lo reciente). Al arrancar, ahora se descartan
+    los updates viejos pendientes y se arranca escuchando solo desde el
+    más reciente — llamar UNA vez al inicio del bot, antes del loop
+    principal.
 
     16/08 (FIX 2, el primero se quedaba corto): getUpdates devuelve COMO
     MÁXIMO 100 mensajes por llamada — si el backlog acumulado tenía más
@@ -1421,6 +1422,36 @@ def _cmd_reanudar_todo() -> str:
     return "✅ <b>Bot reanudado</b>. Vuelve a analizar y alertar normalmente."
 
 
+def _cmd_backup_db() -> str:
+    """
+    03/09 — Manda el archivo COMPLETO de la base de datos (bot.db) por
+    Telegram, para migrar todo el historial (Bot Cripto + PAXG) a los
+    servicios nuevos antes de bajar este servidor viejo. No modifica ni
+    borra nada — solo lee el archivo y lo manda como documento.
+    """
+    if not os.path.exists(db.DB_PATH):
+        return "⚠️ No encontré la base de datos en el servidor (revisá DB_PATH)."
+    try:
+        with open(db.DB_PATH, "rb") as f:
+            contenido = f.read()
+    except Exception as e:
+        return f"⚠️ No pude leer el archivo de la base: {e}"
+
+    fecha = datetime.now(db.TZ_ARG).strftime("%Y%m%d_%H%M")
+    nombre_archivo = f"bot_backup_{fecha}.db"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    files = {"document": (nombre_archivo, contenido, "application/x-sqlite3")}
+    data = {"chat_id": CHAT_ID, "caption": f"💾 Backup completo de la base — {len(contenido)/1024:.1f} KB"}
+    try:
+        r = requests.post(url, data=data, files=files, timeout=60)
+        resultado = r.json()
+        if not resultado.get("ok"):
+            return f"⚠️ Falló el envío a Telegram: {resultado}"
+        return None  # el archivo ya se mandó directo, no hace falta texto extra
+    except Exception as e:
+        return f"⚠️ Error al mandar el backup: {e}"
+
+
 def _cmd_exportar() -> str:
     """
     Exporta TODO el historial de señales (tabla senales completa) a un CSV
@@ -1631,6 +1662,8 @@ def procesar_comando(texto: str) -> str:
         return _cmd_pausar_todo(args)
     elif cmd == "/reanudar_todo":
         return _cmd_reanudar_todo()
+    elif cmd == "/backup_db":
+        return _cmd_backup_db()
     elif cmd == "/exportar":
         return _cmd_exportar()
     elif cmd == "/debug_orden":
@@ -1777,6 +1810,9 @@ def procesar_comando(texto: str) -> str:
             "  No afecta operaciones ya abiertas en Pionex.\n\n"
             "/reanudar_todo\n"
             "  ✅ Reactiva el bot después de /pausar_todo.\n\n"
+            "/backup_db\n"
+            "  💾 Manda el archivo completo de la base de datos (bot.db)\n"
+            "  por Telegram — para migrar el historial antes de bajar el servidor.\n\n"
             "/exportar\n"
             "  📊 Manda un CSV con TODO el historial (abrí con Excel).\n\n"
             "/escanear [cantidad]\n"
